@@ -2,12 +2,12 @@ import asyncio
 import websockets
 import base64
 import numpy as np
+import zlib
 
 def calculate_checksum(data):
-    """Вычисляет контрольную сумму."""
-    checksum = sum(data)
-    checksum %= 65536
-    return checksum.to_bytes(2, 'big')
+    """Вычисляет контрольную сумму с использованием zlib.crc32."""
+    checksum = zlib.crc32(data) & 0xffffffff
+    return checksum.to_bytes(4, 'big')
 
 async def send_binary_data():
     url = "ws://localhost:8765"
@@ -22,15 +22,18 @@ async def send_binary_data():
             print(f"Отправка данных: {encoded_data}")
             print("Отправляемые данные:", binary_data)
             print("Контрольная сумма:", checksum)
+            print(f"Отправляемые данные (длина): {len(data_with_checksum)}")
 
             await websocket.send(encoded_data)
 
             response = await websocket.recv()
             decoded_response = base64.b64decode(response)
 
-            if len(decoded_response) == 66:
-                received_data = decoded_response[:-2]
-                received_checksum = decoded_response[-2:]
+            print(f"Декодированные данные (длина): {len(decoded_response)}")
+
+            if len(decoded_response) == 68:
+                received_data = decoded_response[:-4]
+                received_checksum = decoded_response[-4:]
 
                 expected_checksum = calculate_checksum(received_data)
                 if expected_checksum == received_checksum:
