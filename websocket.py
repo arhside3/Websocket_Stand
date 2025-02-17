@@ -4,17 +4,21 @@ import base64
 import numpy as np
 import zlib
 
+
 def calculate_checksum(data):
     """Вычисляет контрольную сумму с использованием zlib.crc32."""
-    checksum = zlib.crc32(data) & 0xffffffff
+    checksum = zlib.crc32(data) & 0xFFFFFFFF
     return checksum.to_bytes(4, 'big')
+
 
 async def send_binary_data():
     url = "ws://localhost:8765"
 
     async with websockets.connect(url) as websocket:
         for _ in range(10):
-            binary_data = np.random.randint(1, 101, size=64).astype(np.uint8).tobytes()
+            binary_data = (
+                np.random.randint(1, 101, size=64).astype(np.uint8).tobytes()
+            )
             checksum = calculate_checksum(binary_data)
             data_with_checksum = binary_data + checksum
 
@@ -45,6 +49,7 @@ async def send_binary_data():
                 print("Сломанные данные с сервера")
 
             await asyncio.sleep(1)
+
 
 if __name__ == "__main__":
     asyncio.run(send_binary_data())
