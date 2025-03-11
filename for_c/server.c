@@ -8,14 +8,12 @@
 #define DATABASE_URL "my_database.db"
 #define TABLE_NAME "waveform_data"
 
-// Функция для вычисления контрольной суммы
 unsigned int calculate_checksum(const unsigned char *data, size_t len) {
     unsigned int checksum = crc32(0L, Z_NULL, 0);
     checksum = crc32(checksum, data, len);
     return checksum;
 }
 
-// Обратный вызов для обработки событий WebSocket
 static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
         case LWS_CALLBACK_ESTABLISHED:
@@ -23,8 +21,8 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
             break;
 
         case LWS_CALLBACK_RECEIVE:
-            // Обработка полученных бинарных данных
-            if (len == 68) { // Проверяем длину полученных данных
+
+            if (len == 68) { 
                 unsigned char received_data[64];
                 unsigned int received_checksum;
 
@@ -37,7 +35,6 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
                 if (expected_checksum == received_checksum) {
                     printf("Контрольная сумма совпадает. Данные корректны.\n");
 
-                    // Сохранение данных в базу данных
                     sqlite3 *db;
                     sqlite3_stmt *stmt;
                     int rc = sqlite3_open(DATABASE_URL, &db);
@@ -54,14 +51,13 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
                         return 0;
                     }
 
-                    // Преобразование бинарных данных в строку для хранения в БД
-                    char data_str[64 * 3 + 1]; // Для хранения в виде строки
+                    char data_str[64 * 3 + 1];
                     for (int i = 0; i < 64; ++i) {
                         sprintf(data_str + i * 3, "%02x ", received_data[i]);
                     }
 
                     sqlite3_bind_text(stmt, 1, data_str, -1, SQLITE_STATIC);
-                    sqlite3_bind_text(stmt, 2, data_str, -1, SQLITE_STATIC); // Для теста сохраняем одни и те же данные
+                    sqlite3_bind_text(stmt, 2, data_str, -1, SQLITE_STATIC);
 
                     rc = sqlite3_step(stmt);
                     if (rc != SQLITE_DONE) {
@@ -92,7 +88,6 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
 }
 
 int main() {
-    // Создание таблицы в базе данных, если ее нет
     sqlite3 *db;
     int rc = sqlite3_open(DATABASE_URL, &db);
     if (rc) {
@@ -108,7 +103,6 @@ int main() {
 
     sqlite3_close(db);
 
-    // Настройка WebSocket-сервера
     struct lws_protocols protocol = {
         "http",
         callback_http,
@@ -118,8 +112,8 @@ int main() {
 
     struct lws_context_creation_info info;
     memset(&info, 0, sizeof(info));
-    info.port = 8765; // Порт, на котором будет работать сервер
-    info.protocols = &protocol; // Указатель на массив протоколов
+    info.port = 8765;
+    info.protocols = &protocol;
     info.gid = -1;
     info.uid = -1;
 
@@ -132,7 +126,7 @@ int main() {
     printf("Сервер запущен на порту 8765\n");
 
     while (1) {
-        lws_service(context, 50); // Обработка событий
+        lws_service(context, 50);
     }
 
     lws_context_destroy(context);

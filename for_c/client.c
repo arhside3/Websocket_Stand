@@ -7,14 +7,12 @@
 
 #define URL "ws://localhost:8765"
 
-// Функция для вычисления контрольной суммы
 unsigned int calculate_checksum(const unsigned char *data, size_t len) {
     unsigned int checksum = crc32(0L, Z_NULL, 0);
     checksum = crc32(checksum, data, len);
     return checksum;
 }
 
-// Обратный вызов для обработки событий WebSocket
 static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED:
@@ -24,7 +22,7 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
         case LWS_CALLBACK_CLIENT_RECEIVE:
             printf("Получены данные: длина %zu\n", len);
 
-            if (len == 68) { // Проверяем длину полученных данных
+            if (len == 68) {
                 unsigned char received_data[64];
                 unsigned int received_checksum;
 
@@ -45,7 +43,6 @@ static int callback_websocket(struct lws *wsi, enum lws_callback_reasons reason,
             break;
 
         case LWS_CALLBACK_CLIENT_WRITEABLE:
-            // Генерация и отправка данных
             {
                 unsigned char binary_data[64];
                 for (int i = 0; i < 64; ++i) {
@@ -77,11 +74,10 @@ int main() {
     struct lws_context_creation_info info;
     memset(&info, 0, sizeof(info));
 
-    // Настройка контекста
-    info.port = CONTEXT_PORT_NO_LISTEN; // Клиент не слушает порт
+    info.port = CONTEXT_PORT_NO_LISTEN;
     info.protocols = (struct lws_protocols[]){
         {"http", callback_websocket, 0, 0},
-        {NULL, NULL, 0, 0} // Завершение списка протоколов
+        {NULL, NULL, 0, 0}
     };
     info.gid = -1;
     info.uid = -1;
@@ -113,10 +109,9 @@ int main() {
 
     int send_data = 0;
     while (1) {
-        lws_service(context, 50); // Обработка событий
+        lws_service(context, 50);
 
         if (send_data) {
-            // Генерация и отправка данных
             unsigned char binary_data[64];
             for (int i = 0; i < 64; ++i) {
                 binary_data[i] = rand() % 100 + 1;
@@ -133,9 +128,8 @@ int main() {
             send_data = 0;
         }
 
-        usleep(100000); // Задержка перед отправкой следующих данных
+        usleep(100000);
 
-        // Отправка данных каждые 100 мс
         send_data = 1;
     }
 
