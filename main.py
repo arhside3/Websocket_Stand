@@ -15,8 +15,8 @@ Base = declarative_base()
 class WaveformData(Base):
     __tablename__ = TABLE_NAME
     id = Column(Integer, primary_key=True)
-    time_data = Column(JSON)  # Use JSON type for lists of numbers
-    voltage_data = Column(JSON) # Use JSON type for lists of numbers
+    time_data = Column(JSON)
+    voltage_data = Column(JSON)
 
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -27,16 +27,13 @@ async def handle_websocket(websocket):
     try:
         async for message in websocket:
             try:
-                data = json.loads(message)  # Parse JSON message
+                data = json.loads(message)
                 print("Полученные данные:", data)
 
-                # Extract time and voltage data
                 time_data = data.get('time')
                 voltage_data = data.get('voltage')
 
-                # Check if the data is valid
                 if time_data is not None and voltage_data is not None:
-                    # Create a new WaveformData object
                     waveform_data = WaveformData(time_data=time_data, voltage_data=voltage_data)
                     session.add(waveform_data)
                     session.commit()

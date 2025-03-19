@@ -1,7 +1,7 @@
 import serial
 import time
 
-COM_PORT = 'COM3'
+COM_PORT = 'ttyUSB0'
 BAUD_RATE = 19200
 TIMEOUT = 1
 

@@ -210,7 +210,7 @@ Record and monitor data from a UNI-T UT803 table multimeter via serial connectio
         f = sys.stdout
     else:
         f = open(args.output, "w")
-    current_measurement = ""
+    current_measurement = ''
     initial_time = 0.0
     # For some freakin' reason the UT803 sends each measurement twice.
     # Filter that out!
@@ -218,13 +218,16 @@ Record and monitor data from a UNI-T UT803 table multimeter via serial connectio
     try:
         while True:
             r = conn.read()
+            print(f'{r}')
             if not r:
                 continue
             value, unit, measure, flags = r
             t = time.time() - initial_time
+            print(t)
             if measure != current_measurement:
                 if current_measurement:
                     f.write("\n")
+                    print("r03")
                 current_measurement = measure
                 f.write("# initial flags: {}\n#time(s)\t{}({})\toverload\n".format(
                     ", ".join(str(k) for k,v in flags.items() if v),

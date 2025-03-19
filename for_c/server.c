@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 #include <libwebsockets.h>
 #include <zlib.h>
+#include <time.h>
 
 #define DATABASE_URL "my_database.db"
 #define TABLE_NAME "waveform_data"
@@ -14,6 +15,18 @@ unsigned int calculate_checksum(const unsigned char *data, size_t len) {
     return checksum;
 }
 
+
+void get_current_time(char *time_str, size_t size) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
+    struct tm *tm_info = localtime(&tv.tv_sec);
+    strftime(time_str, size, "%Y-%m-%d %H:%M:%S", tm_info);
+
+    // Добавляем миллисекунды
+    snprintf(time_str + strlen(time_str), size - strlen(time_str), ".%03ld", tv.tv_usec / 1000);
+}
+
 static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
         case LWS_CALLBACK_ESTABLISHED:
@@ -21,7 +34,6 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
             break;
 
         case LWS_CALLBACK_RECEIVE:
-
             if (len == 68) { 
                 unsigned char received_data[64];
                 unsigned int received_checksum;
@@ -43,6 +55,17 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
                         return 0;
                     }
 
+                    char time_str[24];
+                    get_current_time(time_str, sizeof(time_str));
+
+                    char data_str[64 * 3 + 1];
+                    for (int i = 0; i < 64; ++i) {
+                        sprintf(data_str + i * 3, "%02x ", received_data[i]);
+                    }
+
+
+
+
                     const char *sql = "INSERT INTO waveform_data (time_data, voltage_data) VALUES (?, ?)";
                     rc = sqlite3_prepare_v2(db, sql, -1, &stmt, 0);
                     if (rc != SQLITE_OK) {
@@ -51,12 +74,7 @@ static int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void
                         return 0;
                     }
 
-                    char data_str[64 * 3 + 1];
-                    for (int i = 0; i < 64; ++i) {
-                        sprintf(data_str + i * 3, "%02x ", received_data[i]);
-                    }
-
-                    sqlite3_bind_text(stmt, 1, data_str, -1, SQLITE_STATIC);
+                    sqlite3_bind_text(stmt, 1, time_str, -1, SQLITE_STATIC);
                     sqlite3_bind_text(stmt, 2, data_str, -1, SQLITE_STATIC);
 
                     rc = sqlite3_step(stmt);
@@ -95,7 +113,10 @@ int main() {
         return 1;
     }
 
-    const char *sql = "CREATE TABLE IF NOT EXISTS waveform_data (id INTEGER PRIMARY KEY, time_data TEXT, voltage_data TEXT)";
+    const char *sql = "CREATE TABLE IF NOT EXISTS waveform_data ("
+                      "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                      "time_data TEXT, "
+                      "data TEXT)"; 
     rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
     if (rc != SQLITE_OK) {
         printf("Ошибка создания таблицы: %s\n", sqlite3_errmsg(db));
