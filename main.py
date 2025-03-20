@@ -1,7 +1,8 @@
 import asyncio
 import websockets
 import json
-from sqlalchemy import create_engine, Column, Integer, LargeBinary, Float, String
+import numpy as np
+from sqlalchemy import create_engine, Column, Integer, JSON, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.sqlite import JSON
@@ -17,6 +18,15 @@ class WaveformData(Base):
     id = Column(Integer, primary_key=True)
     time_data = Column(JSON)
     voltage_data = Column(JSON)
+    amplitude = Column(Float)
+    mean_voltage = Column(Float)
+    rms_voltage = Column(Float)
+    max_voltage = Column(Float)
+    min_voltage = Column(Float)
+    frequency = Column(Float)
+    phase_shift = Column(Float)  # Необходимо реализовать расчет фазового сдвига
+    period = Column(Float)
+    overshoot = Column(Float)  # Необходимо реализовать расчет пульсаций
 
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -30,11 +40,36 @@ async def handle_websocket(websocket):
                 data = json.loads(message)
                 print("Полученные данные:", data)
 
-                time_data = data.get('time')
-                voltage_data = data.get('voltage')
+                time_data = np.array(data.get('time'))
+                voltage_data = np.array(data.get('voltage'))
 
                 if time_data is not None and voltage_data is not None:
-                    waveform_data = WaveformData(time_data=time_data, voltage_data=voltage_data)
+                    # Расчет дополнительных параметров
+                    amplitude = np.max(voltage_data) - np.min(voltage_data)
+                    mean_voltage = np.mean(voltage_data)
+                    rms_voltage = np.sqrt(np.mean(voltage_data**2))
+                    max_voltage = np.max(voltage_data)
+                    min_voltage = np.min(voltage_data)
+                    frequency = 1 / (time_data[1] - time_data[0])  # Пример расчета частоты, может потребоваться FFT для точности
+                    period = 1 / frequency
+                    overshoot = np.max(voltage_data) - max_voltage  # Пример расчета пульсаций, может потребоваться корректировка
+
+                    # Фазовый сдвиг и другие пульсации необходимо реализовать отдельно
+                    phase_shift = 0  # Пока не реализовано
+
+                    waveform_data = WaveformData(
+                        time_data=data.get('time'),
+                        voltage_data=data.get('voltage'),
+                        amplitude=amplitude,
+                        mean_voltage=mean_voltage,
+                        rms_voltage=rms_voltage,
+                        max_voltage=max_voltage,
+                        min_voltage=min_voltage,
+                        frequency=frequency,
+                        phase_shift=phase_shift,
+                        period=period,
+                        overshoot=overshoot
+                    )
                     session.add(waveform_data)
                     session.commit()
                     print("Данные сохранены в базу данных")
