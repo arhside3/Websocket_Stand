@@ -9,7 +9,6 @@ import argparse
 
 WEBSOCKET_URI = "ws://localhost:8765"
 
-# Парсинг аргументов командной строки
 parser = argparse.ArgumentParser(description="Управление осциллографом")
 parser.add_argument("--channel", type=int, default=1, help="Номер канала (1-4)")
 parser.add_argument("--volts_per_div", type=float, default=1.0, help="Вольт на деление")

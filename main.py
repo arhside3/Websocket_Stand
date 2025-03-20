@@ -24,9 +24,9 @@ class WaveformData(Base):
     max_voltage = Column(Float)
     min_voltage = Column(Float)
     frequency = Column(Float)
-    phase_shift = Column(Float)  # Необходимо реализовать расчет фазового сдвига
+    phase_shift = Column(Float)
     period = Column(Float)
-    overshoot = Column(Float)  # Необходимо реализовать расчет пульсаций
+    overshoot = Column(Float)
 
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -44,18 +44,16 @@ async def handle_websocket(websocket):
                 voltage_data = np.array(data.get('voltage'))
 
                 if time_data is not None and voltage_data is not None:
-                    # Расчет дополнительных параметров
                     amplitude = np.max(voltage_data) - np.min(voltage_data)
                     mean_voltage = np.mean(voltage_data)
                     rms_voltage = np.sqrt(np.mean(voltage_data**2))
                     max_voltage = np.max(voltage_data)
                     min_voltage = np.min(voltage_data)
-                    frequency = 1 / (time_data[1] - time_data[0])  # Пример расчета частоты, может потребоваться FFT для точности
+                    frequency = 1 / (time_data[1] - time_data[0])
                     period = 1 / frequency
-                    overshoot = np.max(voltage_data) - max_voltage  # Пример расчета пульсаций, может потребоваться корректировка
+                    overshoot = np.max(voltage_data) - max_voltage
 
-                    # Фазовый сдвиг и другие пульсации необходимо реализовать отдельно
-                    phase_shift = 0  # Пока не реализовано
+                    phase_shift = 0
 
                     waveform_data = WaveformData(
                         time_data=data.get('time'),
@@ -93,7 +91,6 @@ async def handle_websocket(websocket):
         session.close()
         print(f"Произошел Дисконнект: {websocket.remote_address}")
 
-# Запуск WebSocket-сервера
 async def main():
     print("Создание таблицы(если ее нету)...")
     print("WebSocket server started at ws://localhost:8765")
