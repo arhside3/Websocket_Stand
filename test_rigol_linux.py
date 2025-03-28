@@ -110,17 +110,16 @@ def main():
     if oscilloscope:
         setup_oscilloscope(oscilloscope, channel=1, volts_per_div=0.5, time_per_div='100us')
 
-        time.sleep(2)  # Даем время осциллографу захватить сигнал
+        time.sleep(2)
         time_data, voltage_data = get_waveform_data(oscilloscope, channel=1)
 
         if time_data is not None and voltage_data is not None:
             asyncio.run(send_data_to_server(time_data, voltage_data))
-            plot_waveform(time_data, voltage_data)  # Построение графика сигнала 
+            plot_waveform(time_data, voltage_data)
             
         else:
             print("Нет данных для отправки на сервер.")
 
-        # Закрытие соединения с осциллографом 
         oscilloscope.close()
         print("Соединение с осциллографом закрыто.")
     else:
