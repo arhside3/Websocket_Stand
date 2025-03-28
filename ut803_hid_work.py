@@ -1,260 +1,181 @@
 #!/usr/bin/env python3
 """
-    HID readout tool for UNI-T UT803 multimeter
-    Modified version for HID interface (VID=0x1A86, PID=0xE008)
+    Декодер данных для мультиметра UT803 через HID
+    Надежная версия с поддержкой чисел вида 0.XXX
 """
 
-import sys
-import time
 import hid
-import argparse
-from collections import deque
+import time
+import sys
+import re
+import binascii
+import threading
 
-def chrToInt(c):
-    """Convert special UT803 character to integer"""
-    num = ord(c) - 48
-    if 0 <= num <= 15:
-        return num
-    raise ValueError(f"Invalid numeric character: {c} (0x{ord(c):02X})")
+# Константы
+VID = 0x1A86  # Стандартный VID для UT803
+PID = 0xE008  # Стандартный PID для UT803
 
-class UT803_HID:
-    MEASUREMENT_TYPES = {
-        1: "diode",
-        2: "frequency",
-        3: "resistance",
-        4: "temperature",
-        5: "continuity",
-        6: "capacitance",
-        9: "current",
-        11: "voltage",
-        13: "current",
-        14: "hFE",
-        15: "current",
-    }
+# Маркеры начала пакетов
+PACKET_MARKERS = [0xF7, 0xB0, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39]
 
-    def __init__(self, vid=0x1A86, pid=0xE008):
-        self.vid = vid
-        self.pid = pid
-        self.device = None
-        self.buffer = deque(maxlen=64)
-        self.connect()
+# Команда запроса данных (как в оригинальном ПО)
+REQUEST_DATA_COMMAND = [0x00, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00]
 
-    def connect(self):
-        try:
-            print("Available HID devices:")
-            for dev in hid.enumerate():
-                print(f"  VID: 0x{dev['vendor_id']:04X}, PID: 0x{dev['product_id']:04X}")
-            
-            self.device = hid.device()
-            self.device.open(self.vid, self.pid)
-            print(f"Connected to HID device {self.vid:04X}:{self.pid:04X}")
-            self.device.set_nonblocking(1)
-        except Exception as e:
-            raise IOError(f"HID device error: {str(e)}")
+# Команда инициализации для мгновенного старта
+INIT_COMMAND = [0x00, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x00, 0x00]
 
-    def read_raw_packet(self):
-        """Read exactly 11 bytes of data (UT803 packet)"""
-        packet = bytearray()
-        timeout = time.time() + 1.0  # 1 second timeout
-
-        while len(packet) < 11 and time.time() < timeout:
-            data = self.device.read(64)
-            if data:
-                self.buffer.extend(data)
-
-            # Try to extract 11-byte packet from buffer
-            while len(self.buffer) >= 11:
-                # Найдите начало пакета
-                for i in range(len(self.buffer) - 10):
-                    if 0x30 <= self.buffer[i] <= 0x3F:
-                        packet = bytes([self.buffer[j] for j in range(i, i + 11)])  # Извлекаем пакет
-                        # Удаляем обработанные байты
-                        for _ in range(i + 11):
-                            self.buffer.popleft()  # Убираем один элемент за раз
-                        return packet
-
-                # Если пакет не найден, удаляем первый байт
-                self.buffer.popleft()
-
+def parse_packet(packet):
+    """Анализ пакета данных от мультиметра с поддержкой чисел, начинающихся с нуля"""
+    try:
+        # Преобразуем пакет в строку для применения регулярных выражений
+        ascii_data = ''.join([chr(b) if 32 <= b <= 126 else '.' for b in packet])
+        
+        # Для отладки можно раскомментировать
+        # print(f"ASCII: '{ascii_data}'")
+        
+        # 1. Ищем стандартные 4-значные числа (1642 -> 1.642V)
+        match = re.search(r'(\d{4})', ascii_data)
+        if match:
+            num = match.group(1)
+            value = int(num) / 1000.0
+            value_str = f"{value:.3f}".replace('.', ',')
+            return {'value': value, 'value_str': value_str, 'unit': 'V', 
+                    'ac': True, 'dc': False, 'auto': True, 'hold': False}
+        
+        # 2. Ищем числа вида 0.XXX (цифры с нулем впереди)
+        zero_match = re.search(r'0\.(\d{3})', ascii_data)
+        if zero_match:
+            value = float(f"0.{zero_match.group(1)}")
+            value_str = f"0,{zero_match.group(1)}"
+            return {'value': value, 'value_str': value_str, 'unit': 'V', 
+                    'ac': True, 'dc': False, 'auto': True, 'hold': False}
+        
+        # 3. Ищем числа вида 0,XXX (европейский формат)
+        zero_match2 = re.search(r'0,(\d{3})', ascii_data)
+        if zero_match2:
+            value = float(f"0.{zero_match2.group(1)}")
+            value_str = f"0,{zero_match2.group(1)}"
+            return {'value': value, 'value_str': value_str, 'unit': 'V', 
+                    'ac': True, 'dc': False, 'auto': True, 'hold': False}
+        
+        return None
+    
+    except Exception as e:
+        print(f"Ошибка парсинга: {e}")
         return None
 
-    def read(self):
-        try:
-            packet = self.read_raw_packet()
-            if not packet:
-                return None
-                
-            # Convert to ASCII string
-            line = packet.decode('ascii', errors='replace')
-            if len(line) < 11:
-                print(f"Short packet: {packet.hex()}")
-                return None
-                
-            return self.parse(line)
-        except Exception as e:
-            print(f"Read error: {str(e)}", file=sys.stderr)
-            return None
-
-    def parse(self, line):
-        try:
-            # Byte positions as per protocol
-            exponent = chrToInt(line[0])
-            base_value = line[1:5]
-            measurement = chrToInt(line[5])
-            flags = [chrToInt(c) for c in line[6:9]]
-            
-            # Validate data
-            if not base_value.isdigit():
-                print(f"Invalid base value: {base_value}")
-                return None
-                
-            meas_type = self.MEASUREMENT_TYPES.get(measurement, "unknown")
-            unit = self.get_unit(measurement, flags)
-            
-            # Calculate value
-            exponent += self.get_exponent_offset(unit, exponent)
-            value = float(base_value) * (10 ** exponent)
-            
-            # Handle sign
-            if flags[0] & 0x4:
-                value = -value
-
-            # Parse flags
-            flags_dict = {
-                'overload': bool(flags[0] & 0x1),
-                'sign': bool(flags[0] & 0x4),
-                'not_farenheit': bool(flags[0] & 0x8),
-                'min': bool(flags[1] & 0x2),
-                'max': bool(flags[1] & 0x4),
-                'hold': bool(flags[1] & 0x8),
-                'autorange': bool(flags[2] & 0x2),
-                'ac': bool(flags[2] & 0x4),
-                'dc': bool(flags[2] & 0x8)
-            }
-
-            return (value, unit, meas_type, flags_dict)
-
-        except Exception as e:
-            print(f"Parse error in line '{line}': {str(e)}", file=sys.stderr)
-            return None
-
-    def get_unit(self, measurement, flags):
-        units = {
-            1: "V",
-            2: "Hz",
-            3: "Ω",
-            4: "°C" if flags[0] & 0x8 else "°F",
-            5: "Ω",
-            6: "F",
-            9: "A",
-            11: "V",
-            13: "μA",
-            14: "",
-            15: "mA",
-        }
-        return units.get(measurement, "???")
-
-    def get_exponent_offset(self, unit, exponent):
-        offsets = {
-            "V": -3,
-            "Ω": -1,
-            "A": -2,
-            "mA": -2,
-            "μA": -1,
-            "F": -12,
-        }
-        offset = offsets.get(unit, 0)
-        if unit == "V" and (exponent & 0x4):
-            offset += 2
-        return offset
-
-    def close(self):
-        if self.device:
-            self.device.close()
-
-def pretty_value(value, unit):
-    prefixes = {
-        -12: 'p',
-        -9: 'n',
-        -6: 'μ',
-        -3: 'm',
-        0: '',
-        3: 'k',
-        6: 'M'
-    }
-    
-    if value == 0:
-        return "0.000 " + unit
-    
-    exponent = 0
-    abs_val = abs(value)
-    
-    while abs_val >= 1000 and exponent <= 6:
-        abs_val /= 1000
-        exponent += 3
+def request_thread(device):
+    """Поток для быстрой отправки запросов данных"""
+    try:
+        # Отправляем команду инициализации несколько раз
+        for _ in range(2):
+            device.write(INIT_COMMAND)
+            time.sleep(0.0001)
         
-    while abs_val < 1 and exponent >= -12:
-        abs_val *= 1000
-        exponent -= 3
-        
-    value = abs_val if value > 0 else -abs_val
-    return f"{value:.3f} {prefixes.get(exponent, '')}{unit}"
+        # Непрерывно отправляем запросы с оптимальной скоростью
+        while True:
+            device.write(REQUEST_DATA_COMMAND)
+            time.sleep(0.0005)  # 5мс между запросами - 200 запросов в секунду
+    except Exception as e:
+        print(f"Ошибка в потоке запросов: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="UT803 Multimeter HID Reader")
-    parser.add_argument("-o", "--output", default="-", 
-                      help="Output file (default: stdout)")
-    parser.add_argument("-v", "--vid", type=lambda x: int(x, 16), default=0x1A86,
-                      help="Vendor ID in hex (default: 0x1A86)")
-    parser.add_argument("-p", "--pid", type=lambda x: int(x, 16), default=0xE008,
-                      help="Product ID in hex (default: 0xE008)")
-    parser.add_argument("-m", "--monitor", action="store_true",
-                      help="Show live measurements in console")
-    parser.add_argument("--debug", action="store_true",
-                      help="Show raw data for debugging")
-    args = parser.parse_args()
-
+    print("Поиск мультиметра UT803...")
+    
+    # Показать список доступных устройств для отладки
+    devices = hid.enumerate()
+    found = False
+    for dev in devices:
+        if dev['vendor_id'] == VID and dev['product_id'] == PID:
+            found = True
+            print(f"Найдено устройство: VID: 0x{dev['vendor_id']:04X}, PID: 0x{dev['product_id']:04X} - {dev.get('product_string', '')}")
+    
+    if not found:
+        print(f"ВНИМАНИЕ: Не найдено устройство с VID/PID 0x{VID:04X}/0x{PID:04X}")
+    
     try:
-        meter = UT803_HID(args.vid, args.pid)
-        output = sys.stdout if args.output == "-" else open(args.output, "w")
+        print(f"Подключение к устройству...")
+        device = hid.device()
+        device.open(VID, PID)
+        device.set_nonblocking(1)
+        print("Устройство успешно открыто!")
         
-        print("Starting measurement...", file=sys.stderr)
-        print("# timestamp,value,unit,type,overload,sign,min,max,hold,autorange,ac,dc", 
-              file=output)
+        # Инициализация с отправкой команд для быстрого старта
+        print("Инициализация устройства...")
+        for _ in range(2):  # Увеличено до 10 раз для надежного старта
+            device.write(INIT_COMMAND)
+            time.sleep(0.0001)
+        
+        # Запускаем отдельный поток для отправки запросов
+        request_t = threading.Thread(target=request_thread, args=(device,), daemon=True)
+        request_t.start()
+        
+        # Буфер данных
+        buffer = bytearray()
+        
+        print("\nПоказываю измерения напряжения (V), совместимые с оригинальным ПО...\n")
+        print("No.\tTime\t\tDC/AC\tValue\tUnit\tAuto")
+        
+        count = 0
+        last_value_str = None
+        last_display_time = 0
         
         while True:
-            data = meter.read()
-            if data:
-                value, unit, meas_type, flags = data
-                timestamp = time.time()
-                
-                # Write to output
-                output.write(
-                    f"{timestamp:.3f},{value:.6f},{unit},{meas_type},"
-                    f"{int(flags['overload'])},{int(flags['sign'])},"
-                    f"{int(flags['min'])},{int(flags['max'])},"
-                    f"{int(flags['hold'])},{int(flags['autorange'])},"
-                    f"{int(flags['ac'])},{int(flags['dc'])}\n"
-                )
-                output.flush()
-                
-                # Live monitoring
-                if args.monitor:
-                    value_str = pretty_value(value, unit)
-                    active_flags = [f for f, v in flags.items() if v]
-                    flags_str = ",".join(active_flags) if active_flags else "none"
-                    print(f"\r[{meas_type:10}] {value_str:15} [{flags_str:20}]", end="")
+            # Читаем данные с устройства несколько раз за цикл
+            for _ in range(2):  # 10 попыток чтения за цикл
+                data = device.read(64)
+                if data:
+                    buffer.extend(data)
             
-            time.sleep(0.05)
+            # Проверяем наличие данных для обработки
+            if len(buffer) >= 16:
+                # Ищем маркеры начала пакета
+                for i in range(len(buffer) - 15):
+                    if buffer[i] in PACKET_MARKERS:
+                        # Пробуем обработать пакет начиная с этой позиции
+                        packet = bytes(buffer[i:i+16])
+                        result = parse_packet(packet)
+                        
+                        if result:
+                            current_time = time.time()
+                            current_ms = int(current_time * 1000)
+                            time_since_last = current_ms - last_display_time
+                            
+                            # Показываем если:
+                            # 1. Значение изменилось ИЛИ
+                            # 2. Прошло достаточно времени с последнего отображения
+                            if (last_value_str != result['value_str'] or 
+                                time_since_last > 10):  # Обновление каждые 50мс - хороший баланс
+                                
+                                count += 1
+                                timestamp = time.strftime("%H:%M:%S", time.localtime())
+                                
+                                # Выводим строку, аналогичную оригинальному ПО
+                                print(f"{count}\t{timestamp}\t{'AC' if result['ac'] else 'DC'}\t{result['value_str']}\t{result['unit']}\t{'AUTO' if result['auto'] else ''}")
+                                
+                                # Запоминаем последнее отображенное значение и время
+                                last_value_str = result['value_str']
+                                last_display_time = current_ms
+                        
+                        # Удаляем обработанные данные
+                        del buffer[:i+16]
+                        break
+                
+                # Если буфер слишком большой, очистим его частично
+                if len(buffer) > 512:
+                    del buffer[:256]
 
+    
     except KeyboardInterrupt:
-        print("\nMeasurement stopped by user")
+        print("\nПрограмма остановлена пользователем")
     except Exception as e:
-        print(f"\nError: {str(e)}", file=sys.stderr)
+        print(f"\nОшибка: {e}")
     finally:
-        meter.close()
-        if output != sys.stdout:
-            output.close()
+        try:
+            device.close()
+            print("Устройство закрыто")
+        except:
+            pass
 
 if __name__ == "__main__":
     main()
