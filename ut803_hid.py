@@ -162,7 +162,7 @@ def main():
         count = 0
 
         while True:
-            for _ in range(100):
+            for _ in range(100): 
                 data = device.read(64)
                 if data:
                     buffer.extend(data)
