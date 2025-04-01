@@ -1,313 +1,320 @@
 #!/usr/bin/env python3
 """
-    Специальный декодер данных для мультиметра UT803 через HID
-    С исправлением ошибки первой цифры и стабилизацией показаний
+Декодер для мультиметра UT803 - использует методы из HE2325U_HIDAPI
+для корректной инициализации и чтения данных с устройства
 """
 
 import hid
 import time
-import sys
-import re
 import binascii
-import threading
-import collections
+import sys
 
 # Идентификаторы устройства
-VID = 0x1A86
+VID = 0x1A86  # QinHeng Electronics
 PID = 0xE008
 
-# Команды управления
-REQUEST_DATA_COMMAND = [0x00, 0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00]
-INIT_COMMAND = [0x00, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x00, 0x00]
+# Скорость соединения (как в оригинальном коде)
+BPS = 19200
 
-# Маркеры начала пакетов
-PACKET_MARKERS = [0xF7, 0xB0, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39]
+# Размер пакета данных UT803
+PACKET_SIZE = 11
 
-# Флаги состояния
-FLAG_3_3_AC = 0x04
-FLAG_3_4_DC = 0x08
-FLAG_3_2_AUTO = 0x02
-
-# Режим отладки
-DEBUG = False
-
-# Класс для управления историей измерений и определения стабильного значения
-class StableValueDetector:
-    def __init__(self, window_size=20, stable_count=5):
-        self.values = collections.deque(maxlen=window_size)
-        self.stable_value = None
-        self.stable_count = stable_count
-        self.last_stable_time = 0
-        self.stability_counter = 0
-        self.current_range = None  # Текущий диапазон измерений
-    
-    def add_value(self, value):
-        """Добавляет новое значение и возвращает стабильное"""
+class UT803Decoder:
+    def __init__(self):
+        self.device = None
+        self.last_packet = None
+        self.buffer = bytearray()
+        
+    def connect(self):
+        """Подключение к мультиметру и настройка параметров соединения"""
         try:
-            float_value = float(value)
+            # Перечисляем все устройства HID
+            all_devices = hid.enumerate(VID, PID)
             
-            # Определяем диапазон значения
-            value_range = self._determine_range(float_value)
+            if len(all_devices) == 0:
+                print(f"Устройство с VID=0x{VID:04X}, PID=0x{PID:04X} не найдено")
+                return False
             
-            # Добавляем значение в историю
-            self.values.append((float_value, value_range))
-            
-            # Анализируем текущее состояние
-            range_counts = self._count_ranges()
-            
-            # Если есть доминирующий диапазон
-            if range_counts:
-                dominant_range, count = max(range_counts.items(), key=lambda x: x[1])
+            # Выводим информацию о найденных устройствах
+            for dev in all_devices:
+                name = ""
+                if 'manufacturer_string' in dev and dev['manufacturer_string']:
+                    name += dev['manufacturer_string'] + " "
+                if 'product_string' in dev and dev['product_string']:
+                    name += dev['product_string']
+                path = dev['path']
+                if isinstance(path, bytes):
+                    path = path.decode('ascii', errors='ignore')
+                print(f"* {name} [{path}]")
                 
-                # Если диапазон стабилен достаточное количество измерений
-                if count >= self.stable_count:
-                    # Устанавливаем текущий диапазон
-                    self.current_range = dominant_range
-                    
-                    # Вычисляем среднее значение для этого диапазона
-                    range_values = [v for v, r in self.values if r == dominant_range]
-                    if range_values:
-                        # Используем среднее из последних 5 значений этого диапазона
-                        recent_values = range_values[-5:] if len(range_values) > 5 else range_values
-                        mean_value = sum(recent_values) / len(recent_values)
-                        
-                        # Обновляем стабильное значение
-                        self.stable_value = mean_value
-                        self.last_stable_time = time.time()
-                        self.stability_counter += 1
-                        
-                        # Возвращаем отформатированное значение
-                        return f"{mean_value:.3f}", True
+            # Открываем устройство
+            self.device = hid.device()
+            self.device.open(VID, PID)
+            self.device.set_nonblocking(1)
             
-            # Если у нас есть стабильное значение, используем его
-            if self.stable_value is not None:
-                # Проверяем время с последнего стабильного значения
-                if time.time() - self.last_stable_time < 5.0:  # 5 секунд таймаут
-                    # Возвращаем последнее стабильное значение
-                    return f"{self.stable_value:.3f}", False
+            print(f"Подключено к мультиметру UT803 (VID:{VID:04X} PID:{PID:04X})")
             
-            # В крайнем случае возвращаем текущее значение
-            return value, False
+            # ВАЖНО: Отправляем feature report для настройки скорости и параметров передачи
+            self.configure_device()
             
+            return True
         except Exception as e:
-            if DEBUG:
-                print(f"Ошибка обработки значения: {e}")
-            return value, False
+            print(f"Ошибка подключения: {e}")
+            return False
     
-    def _determine_range(self, value):
-        """Определяет диапазон значения"""
-        if 0.1 <= value < 0.35:
-            return "LOW"
-        elif 1.5 <= value < 3.0:
-            return "HIGH"
-        else:
-            return "UNKNOWN"
+    def configure_device(self):
+        """Настройка параметров соединения через Feature Report"""
+        try:
+            # Создаем Feature Report для установки скорости и параметров
+            buf = [0] * 6
+            buf[0] = 0x0  # Report ID
+            buf[1] = BPS & 0xFF
+            buf[2] = (BPS >> 8) & 0xFF
+            buf[3] = (BPS >> 16) & 0xFF
+            buf[4] = (BPS >> 24) & 0xFF
+            buf[5] = 0x03  # 3 = 8 бит данных, без четности, 1 стоп-бит
+            
+            # Отправляем Feature Report
+            result = self.device.send_feature_report(buf)
+            
+            if result == -1:
+                print("Ошибка отправки Feature Report")
+            else:
+                print(f"Feature Report отправлен успешно ({result} байт)")
+        except Exception as e:
+            print(f"Ошибка настройки устройства: {e}")
     
-    def _count_ranges(self):
-        """Подсчитывает количество значений в каждом диапазоне"""
-        counts = {}
-        for _, value_range in self.values:
-            if value_range in ["LOW", "HIGH"]:  # Учитываем только известные диапазоны
-                counts[value_range] = counts.get(value_range, 0) + 1
-        return counts
+    def disconnect(self):
+        """Отключение от мультиметра"""
+        if self.device:
+            self.device.close()
+            print("Мультиметр отключен")
+            self.device = None
     
-    def get_status(self):
-        """Возвращает текущий статус стабильности"""
-        if self.stability_counter >= 10:
-            return "Стабильно"
-        elif self.stability_counter >= 5:
-            return "Нормально"
-        elif self.stable_value is not None:
-            return "Фильтрованное"
-        else:
-            return "Нестабильно"
-
-# Функция для поиска значений в пакете данных
-def extract_value_from_packet(packet):
-    """Извлекает значение измерения из пакета данных"""
-    try:
-        # Конвертируем в строковое представление для анализа
-        ascii_data = ''.join([chr(b) if 32 <= b <= 126 else '.' for b in packet])
+    def read_data(self):
+        """Чтение данных с мультиметра по протоколу HE2325U"""
+        if not self.device:
+            return
         
-        if DEBUG:
-            hex_data = ' '.join([f"{b:02X}" for b in packet])
-            print(f"ASCII: '{ascii_data}', HEX: {hex_data}")
-        
-        # Пытаемся найти значение в формате X.XXX (например, 2.441)
-        value_match = re.search(r'([0-9])\.([0-9]{3})', ascii_data)
-        if value_match:
-            first_digit = value_match.group(1)
-            decimals = value_match.group(2)
-            value_str = f"{first_digit}.{decimals}"
-            return value_str, True
-        
-        # Ищем числовую последовательность, похожую на измерение
-        for pattern in [
-            r'([0-9])([0-9]{3})',  # Например, "2441" -> "2.441"
-            r'0[.,]([0-9]{3})'     # Например, "0.244" -> "0.244"
-        ]:
-            match = re.search(pattern, ascii_data)
-            if match:
-                if pattern == r'([0-9])([0-9]{3})':
-                    value_str = f"{match.group(1)}.{match.group(2)}"
+        try:
+            # Чтение данных с таймаутом в 1000 мс
+            answer = self.device.read(256, timeout_ms=1000)
+            if len(answer) < 1:
+                return
+                
+            # Используем протокол HE2325U: первый байт содержит число байт в пакете
+            nbytes = answer[0] & 0x7
+            if nbytes > 0:
+                if len(answer) < nbytes + 1:
+                    print("Ошибка: объявлено больше байт, чем получено")
+                    return
+                    
+                # Получаем полезную нагрузку и очищаем старший бит
+                payload = answer[1:nbytes + 1]
+                payload = [b & (~(1<<7)) for b in payload]
+                
+                # Добавляем байты в буфер
+                self.buffer.extend(payload)
+                
+                # Обрабатываем данные в буфере
+                self.process_buffer()
+        except Exception as e:
+            print(f"Ошибка чтения данных: {e}")
+    
+    def process_buffer(self):
+        """Обработка буфера данных и поиск полных пакетов"""
+        # Ищем маркер конца пакета (\r\n)
+        while len(self.buffer) >= PACKET_SIZE:
+            if self.buffer[9] == 0x0D and self.buffer[10] == 0x0A:  # \r\n
+                # Извлекаем пакет
+                packet = bytes(self.buffer[:PACKET_SIZE])
+                self.buffer = self.buffer[PACKET_SIZE:]
+                
+                # Проверяем, не дубликат ли это
+                if packet != self.last_packet:
+                    self.last_packet = packet
+                    # Декодируем пакет согласно документации
+                    self.decode_ut803_packet(packet)
+            else:
+                # Если не найден маркер, удаляем первый байт и продолжаем поиск
+                self.buffer.pop(0)
+    
+    def decode_ut803_packet(self, packet):
+        """Декодирование пакета UT803 по документации"""
+        try:
+            # Проверяем длину пакета
+            if len(packet) != PACKET_SIZE:
+                return
+            
+            # Извлекаем компоненты согласно документации
+            range_byte = packet[0] & 0x0F  # Диапазон измерения
+            digits = [packet[1] & 0x0F, packet[2] & 0x0F, packet[3] & 0x0F, packet[4] & 0x0F]  # 4 цифры
+            function_byte = packet[5]  # Функция (тип измерения)
+            info_byte = packet[6]  # Информационные биты (знак, ошибки)
+            info2_byte = packet[7]  # Дополнительная информация (HOLD, MAX/MIN)
+            coupling_byte = packet[8]  # Тип связи (AC/DC, AUTO)
+            
+            # Проверяем на перегрузку (Overload)
+            is_overload = (info_byte & 0x01) != 0
+            
+            # Определяем знак числа
+            is_negative = (info_byte & 0x08) != 0
+            
+            # Собираем значение из цифр
+            value = 0
+            for digit in digits:
+                value = value * 10 + digit
+            
+            # Определяем позицию десятичной точки и множитель
+            decimal_pos, unit = self.get_decimal_and_unit(function_byte, range_byte)
+            
+            # Форматируем значение
+            if is_overload:
+                value_str = "OL"
+            else:
+                if decimal_pos > 0:
+                    divisor = 10 ** decimal_pos
+                    value_str = format(value / divisor, f'.{decimal_pos}f')
                 else:
-                    value_str = f"0.{match.group(1)}"
-                return value_str, True
-        
-        # Проверка на специальные форматы (например, HEX представление чисел)
-        if re.search(r'[0-9A-F]{2}.[0-9A-F]{2}.[0-9A-F]{2}.[0-9A-F]{2}', ascii_data):
-            # Может быть бинарное представление float
-            for i in range(len(packet) - 3):
-                try:
-                    import struct
-                    value = struct.unpack('f', packet[i:i+4])[0]
-                    if 0.1 <= value <= 3.0:  # Разумный диапазон для нашего случая
-                        return f"{value:.3f}", True
-                except:
-                    pass
-        
-        return None, False
+                    value_str = str(value)
+                
+                # Применяем знак
+                if is_negative:
+                    value_str = "" + value_str
+            
+            # Определяем режим измерения
+            modes = []
+            
+            # Режим связи AC/DC
+            if coupling_byte & 0x04:
+                modes.append("AC")
+            elif coupling_byte & 0x08:
+                modes.append("DC")
+            
+            # AUTO/MAN режим
+            if coupling_byte & 0x02:
+                modes.append("AUTO")
+            else:
+                modes.append("MAN")
+            
+            # Режимы HOLD/MAX/MIN
+            if info2_byte & 0x08:
+                modes.append("HOLD")
+            if info2_byte & 0x04:
+                modes.append("MAX")
+            if info2_byte & 0x02:
+                modes.append("MIN")
+            
+            # Получаем название функции
+            function_name = self.get_function_name(function_byte)
+            
+            # Выводим только содержательные данные в удобном формате
+            if not (value == 0 and function_byte in [0x3B, 0x33, 0x28]):  # Фильтруем нулевые показания для некоторых функций
+                measurement = f"{value_str} {unit} {' '.join(modes)}"
+                if function_name:
+                    measurement += f" [{function_name}]"
+                print(measurement)
+                
+        except Exception as e:
+            print(f"Ошибка декодирования пакета: {e}")
     
-    except Exception as e:
-        if DEBUG:
-            print(f"Ошибка извлечения значения: {e}")
-        return None, False
+    def get_decimal_and_unit(self, function_byte, range_byte):
+        """Определение позиции десятичной точки и единицы измерения"""
+        # Таблица из документации для UT803
+        if function_byte == 0x3B:  # Вольтметр
+            range_table = [3, 2, 1, 0, 3]  # 6V, 60V, 600V, 1000V, 600mV
+            units = ["В", "В", "В", "В", "мВ"]
+            return range_table[range_byte] if range_byte < len(range_table) else 0, units[range_byte] if range_byte < len(units) else "В"
+        
+        elif function_byte == 0x33:  # Омметр
+            range_table = [1, 1, 2, 2, 3, 3]  # 600, 6k, 60k, 600k, 6M, 60M
+            if range_byte == 0:
+                return 1, "Ом"
+            elif range_byte <= 3:
+                return range_table[range_byte], "кОм"
+            else:
+                return range_table[range_byte], "МОм"
+        
+        elif function_byte == 0x68:  # Емкость
+            range_table = [3, 2, 1, 3, 2, 1, 3]  # 6n, 60n, 600n, 6µ, 60µ, 600µ, 6m
+            if range_byte <= 2:
+                return range_table[range_byte], "нФ"
+            elif range_byte <= 5:
+                return range_table[range_byte], "мкФ"
+            else:
+                return range_table[range_byte], "мФ"
+        
+        elif function_byte == 0x28:  # Частота
+            if range_byte == 0:
+                return 0, "Гц"
+            elif range_byte <= 2:
+                return range_byte, "кГц"
+            else:
+                return range_byte - 3, "МГц"
+        
+        elif function_byte == 0x48:  # Температура °C
+            return 0, "°C"
+        
+        elif function_byte == 0x40:  # Температура °F
+            return 0, "°F"
+        
+        elif function_byte == 0x3D:  # µA
+            if range_byte == 0:
+                return 1, "мкА"
+            else:
+                return 0, "мкА"
+        
+        elif function_byte == 0x3F:  # mA
+            if range_byte == 0:
+                return 2, "мА"
+            else:
+                return 1, "мА"
+        
+        elif function_byte == 0x39:  # A
+            return 2, "А"
+        
+        elif function_byte == 0x19:  # Диод
+            return 0, "В"
+        
+        return 0, ""
+    
+    def get_function_name(self, function_byte):
+        """Получение названия функции"""
+        functions = {
+            0x3B: "Вольтметр",
+            0x33: "Омметр",
+            0x68: "Ёмкость",
+            0x28: "Частота",
+            0x48: "Термометр °C",
+            0x40: "Термометр °F",
+            0x3D: "Микроамперметр",
+            0x3F: "Миллиамперметр",
+            0x39: "Амперметр",
+            0x19: "Диод",
+            0x59: "Прозвонка"
+        }
+        return functions.get(function_byte, "")
 
-# Функция для постоянного запроса данных
-def request_data_thread(device):
-    """Фоновый поток для непрерывного запроса данных"""
-    try:
-        while True:
-            device.write(REQUEST_DATA_COMMAND)
-            time.sleep(0.01)  # Небольшая пауза между запросами
-    except:
-        pass
-
-# Основная функция программы
 def main():
-    global DEBUG
+    decoder = UT803Decoder()
     
-    # Проверяем аргументы командной строки
-    if len(sys.argv) > 1 and "--debug" in sys.argv:
-        DEBUG = True
-        print("Режим отладки включен")
-    
-    print("Поиск мультиметра UT803...")
-    
-    # Подключение к устройству
     try:
-        print("Подключение к устройству...")
-        device = hid.device()
-        device.open(VID, PID)
-        device.set_nonblocking(1)
-        print("Устройство успешно открыто!")
+        if not decoder.connect():
+            print("Не удалось подключиться к мультиметру!")
+            return
         
-        # Инициализация устройства
-        print("Инициализация...")
-        for _ in range(10):
-            device.write(INIT_COMMAND)
-            time.sleep(0.05)
-        
-        # Запускаем фоновый поток запроса данных
-        threading.Thread(target=request_data_thread, args=(device,), daemon=True).start()
-        
-        # Буфер для хранения данных
-        buffer = bytearray()
-        
-        # Детектор стабильных значений
-        detector = StableValueDetector()
-        
-        # Начинаем отображение измерений
-        print("\nПоказываю измерения напряжения (V) в режиме мультиметра...\n")
-        print("No.\tTime\t\tDC/AC\tValue\tUnit\tДиапазон\tСтатус")
-        print("-" * 70)
-        
-        count = 0
-        last_display_time = 0
-        last_displayed_value = None
+        print("\nНажмите Ctrl+C для завершения...\n")
         
         # Основной цикл чтения данных
         while True:
-            # Читаем данные с устройства
-            data = device.read(64)
-            
-            if data:
-                # Добавляем в буфер
-                buffer.extend(data)
-                
-                # Обрабатываем буфер
-                while len(buffer) >= 16:  # Минимальный размер пакета
-                    found = False
-                    
-                    # Ищем маркеры начала пакета
-                    for i in range(min(len(buffer) - 15, 50)):
-                        if buffer[i] in PACKET_MARKERS:
-                            # Берем пакет для анализа
-                            packet = bytes(buffer[i:i+16])
-                            
-                            # Пытаемся извлечь значение
-                            value_str, value_found = extract_value_from_packet(packet)
-                            
-                            if value_found:
-                                # Обрабатываем найденное значение через детектор стабильности
-                                stable_value, is_new = detector.add_value(value_str)
-                                
-                                # Определяем текущее время
-                                current_time = time.time()
-                                
-                                # Показываем результат, если он новый или прошла секунда
-                                if (is_new or last_displayed_value != stable_value or 
-                                    current_time - last_display_time >= 1.0):
-                                    
-                                    # Увеличиваем счетчик
-                                    count += 1
-                                    
-                                    # Форматируем время
-                                    timestamp = time.strftime("%H:%M:%S", time.localtime())
-                                    
-                                    # Получаем диапазон
-                                    range_str = detector.current_range if detector.current_range else "НЕИЗВ"
-                                    
-                                    # Получаем статус стабильности
-                                    status = detector.get_status()
-                                    
-                                    # Выводим информацию
-                                    print(f"{count}\t{timestamp}\tDC\t{stable_value}\tV\t{range_str}\t\t{status}")
-                                    sys.stdout.flush()
-                                    
-                                    # Обновляем последние значения
-                                    last_displayed_value = stable_value
-                                    last_display_time = current_time
-                            
-                            # Удаляем обработанные данные
-                            del buffer[:i+16]
-                            found = True
-                            break
-                    
-                    # Если ничего не нашли, удаляем первый байт
-                    if not found:
-                        del buffer[:1]
-            
-            # Ограничиваем размер буфера
-            if len(buffer) > 1024:
-                buffer = buffer[-512:]
-            
-            # Небольшая пауза для экономии ресурсов
+            decoder.read_data()
             time.sleep(0.01)
-    
+            
     except KeyboardInterrupt:
-        print("\nПрограмма остановлена пользователем")
-    except Exception as e:
-        print(f"\nОшибка: {e}")
-        if DEBUG:
-            import traceback
-            traceback.print_exc()
+        print("\nПрограмма завершена пользователем")
+    
     finally:
-        try:
-            device.close()
-            print("Устройство закрыто")
-        except:
-            pass
+        decoder.disconnect()
 
 if __name__ == "__main__":
     main()
