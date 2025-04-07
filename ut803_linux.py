@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('UT803')
 
-class UT61DReader:
+class UT803Reader:
     def __init__(self):
         self.device = None
         self.serial_port = None
@@ -138,7 +138,7 @@ class UT61DReader:
             self.device = None
             
 def main():
-    reader = UT61DReader()
+    reader = UT803Reader()
     
     if reader.connect_serial():
         print("Reading from RS232 interface...")
