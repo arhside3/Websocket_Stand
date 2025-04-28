@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """
 Декодер для мультиметра UT803 - использует методы из HE2325U_HIDAPI
 для корректной инициализации и чтения данных с устройства
@@ -9,14 +9,11 @@ import time
 import binascii
 import sys
 
-# Идентификаторы устройства
-VID = 0x1A86  # QinHeng Electronics
+VID = 0x1A86
 PID = 0xE008
 
-# Скорость соединения (как в оригинальном коде)
 BPS = 19200
 
-# Размер пакета данных UT803
 PACKET_SIZE = 11
 
 class UT803Decoder:

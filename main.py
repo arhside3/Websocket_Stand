@@ -2,97 +2,130 @@ import asyncio
 import websockets
 import json
 import numpy as np
-from sqlalchemy import create_engine, Column, Integer, JSON, Float
+from sqlalchemy import create_engine, Column, Integer, JSON, Float, String, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.dialects.sqlite import JSON
+from datetime import datetime
 
 DATABASE_URL = 'sqlite:///my_database.db'
-TABLE_NAME = 'waveform_data'
 
 engine = create_engine(DATABASE_URL, echo=False)
 Base = declarative_base()
 
-class WaveformData(Base):
-    __tablename__ = TABLE_NAME
+class OscilloscopeData(Base):
+    __tablename__ = 'осциллограф'
     id = Column(Integer, primary_key=True)
-    time_data = Column(JSON)
-    voltage_data = Column(JSON)
-    amplitude = Column(Float)
-    mean_voltage = Column(Float)
-    rms_voltage = Column(Float)
-    max_voltage = Column(Float)
-    min_voltage = Column(Float)
+    timestamp = Column(String)
+    channel = Column(String)
+    voltage = Column(Float)
     frequency = Column(Float)
-    phase_shift = Column(Float)
-    period = Column(Float)
-    overshoot = Column(Float)
+    raw_data = Column(JSON)
 
-Base.metadata.create_all(engine)
+
+class MultimeterData(Base):
+    __tablename__ = 'мультиметр'
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(String)
+    value = Column(String)  
+    unit = Column(String)
+    mode = Column(String)
+    range_str = Column(String)
+    measure_type = Column(String)
+    raw_data = Column(JSON)
+
+
+def setup_database():
+    with engine.connect() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS multimeter_data"))
+        conn.execute(text("DROP TABLE IF EXISTS oscilloscope_data"))
+        conn.execute(text("DROP TABLE IF EXISTS waveform_data"))
+        conn.commit()
+    
+
+    Base.metadata.create_all(engine)
+
+setup_database()
 Session = sessionmaker(bind=engine)
 
+
+measurement_counter = 0
+expected_measurements = 0
+
 async def handle_websocket(websocket):
-    print(f"Пользователь подключился: {websocket.remote_address}")
+    print(f"Client connected: {websocket.remote_address}")
     session = Session()
+    global measurement_counter, expected_measurements
+    
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
-                print("Полученные данные:", data)
-
-                time_data = np.array(data.get('time'))
-                voltage_data = np.array(data.get('voltage'))
-
-                if time_data is not None and voltage_data is not None:
-                    amplitude = np.max(voltage_data) - np.min(voltage_data)
-                    mean_voltage = np.mean(voltage_data)
-                    rms_voltage = np.sqrt(np.mean(voltage_data**2))
-                    max_voltage = np.max(voltage_data)
-                    min_voltage = np.min(voltage_data)
-                    frequency = 1 / (time_data[1] - time_data[0])
-                    period = 1 / frequency
-                    overshoot = np.max(voltage_data) - max_voltage
-
-                    phase_shift = 0
-
-                    waveform_data = WaveformData(
-                        time_data=data.get('time'),
-                        voltage_data=data.get('voltage'),
-                        amplitude=amplitude,
-                        mean_voltage=mean_voltage,
-                        rms_voltage=rms_voltage,
-                        max_voltage=max_voltage,
-                        min_voltage=min_voltage,
-                        frequency=frequency,
-                        phase_shift=phase_shift,
-                        period=period,
-                        overshoot=overshoot
+                print("Received data:", data)
+                
+                if "expected_measurements" in data:
+                    expected_measurements = data["expected_measurements"]
+                    measurement_counter = 0  
+                    print(f"Expected measurements set to: {expected_measurements}")
+                    continue
+                
+                current_time = datetime.now()
+                timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                
+                if 'time' in data and 'voltage' in data:
+                    oscilloscope_data = OscilloscopeData(
+                        timestamp=timestamp,
+                        channel="CH1",  
+                        voltage=round(np.mean(data['voltage']), 2),
+                        frequency=round(1.0 / (data['time'][1] - data['time'][0]) if len(data['time']) > 1 else 0, 2),
+                        raw_data=data
                     )
-                    session.add(waveform_data)
+                    session.add(oscilloscope_data)
                     session.commit()
-                    print("Данные сохранены в базу данных")
+                    print(f"Saved oscilloscope data")
                 else:
-                    print("Ошибка: Некорректный формат данных.")
+                    value_str = data.get('value', '0')
+                    if value_str == "OL":
+                        value = "OL"  
+                    else:
 
+                        value = value_str
+                    
+                    multimeter_data = MultimeterData(
+                        timestamp=timestamp,
+                        value=value,  
+                        unit=data.get('unit', ''),
+                        mode=data.get('mode', ''),
+                        range_str=data.get('range_str', ''),
+                        measure_type=data.get('measure_type', ''),
+                        raw_data=data
+                    )
+                    session.add(multimeter_data)
+                    session.commit()
+                    
+                    measurement_counter += 1
+                    print(f"Saved multimeter data. Measurement {measurement_counter} of {expected_measurements}")
+                    
+                    if expected_measurements > 0 and measurement_counter >= expected_measurements:
+                        print(f"Достигнуто ожидаемое количество измерений: {expected_measurements}")
+                        await websocket.send(json.dumps({"status": "complete", "count": measurement_counter}))
+                
             except json.JSONDecodeError as e:
                 session.rollback()
-                print(f"Ошибка декодирования JSON: {e}")
+                print(f"JSON decode error: {e}")
             except Exception as e:
                 session.rollback()
-                print(f"Ошибка обработки данных: {e}")
-            finally:
-                pass
-
-    except websockets.exceptions.ConnectionClosedError:
-        print("Произошел Дисконнект")
+                print(f"Error processing data: {e}")
+                
+    except websockets.exceptions.ConnectionClosed:
+        print("Client disconnected")
     except Exception as e:
-        print(f"Описание ошибки: {e}")
+        print(f"Error handling websocket: {e}")
     finally:
         session.close()
-        print(f"Произошел Дисконнект: {websocket.remote_address}")
+        print(f"Client disconnected: {websocket.remote_address}")
 
 async def main():
-    print("Создание таблицы(если ее нету)...")
     print("WebSocket server started at ws://localhost:8765")
     async with websockets.serve(handle_websocket, 'localhost', 8765):
         await asyncio.Future()

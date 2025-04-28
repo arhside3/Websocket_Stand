@@ -5,17 +5,43 @@ import time
 import asyncio
 import websockets
 import json
+import sys
 
 WEBSOCKET_URI = "ws://localhost:8765"
 
 
 def connect_to_oscilloscope(resource_manager, resource_string):
     try:
-        oscilloscope = resource_manager.open_resource(resource_string)
-        print(f"Подключено к осциллографу: {oscilloscope.query('*IDN?')}")
+        resources = resource_manager.list_resources()
+        print("Available VISA resources:", resources)
+        
+        if not resources:
+            print("No VISA resources found. Please check if the oscilloscope is connected.")
+            return None
+            
+        target_resource = None
+        for resource in resources:
+            if ('USB' in resource and ('6833::1230' in resource or '1AB1::04CE' in resource)):
+                target_resource = resource
+                break
+                
+        if not target_resource:
+            print("Rigol oscilloscope not found. Please check the connection.")
+            return None
+            
+        print(f"Found oscilloscope at: {target_resource}")
+        oscilloscope = resource_manager.open_resource(target_resource)
+        print(f"Connected to oscilloscope: {oscilloscope.query('*IDN?')}")
         return oscilloscope
     except pyvisa.errors.VisaIOError as e:
-        print(f"Ошибка подключения к осциллографу: {e}")
+        print(f"Error connecting to oscilloscope: {e}")
+        print("Please make sure:")
+        print("1. The oscilloscope is connected via USB")
+        print("2. You have installed pyvisa-py: pip install pyvisa-py")
+        print("3. You have proper permissions (try running with sudo or add user to plugdev group)")
+        return None
+    except Exception as e:
+        print(f"Unexpected error: {e}")
         return None
 
 def setup_oscilloscope(oscilloscope, channel=1, volts_per_div=1.0, time_per_div='100us'):
@@ -100,30 +126,33 @@ def plot_waveform(time_data, voltage_data):
     plt.show()
 
 def main():
-    rm = pyvisa.ResourceManager()
-    print("Доступные ресурсы:", rm.list_resources())
-
-    resource_string = 'USB::0x1AB1::0x04CE::DS1ZC263402178::INSTR'
-
-    oscilloscope = connect_to_oscilloscope(rm, resource_string)
-
-    if oscilloscope:
-        setup_oscilloscope(oscilloscope, channel=1, volts_per_div=0.5, time_per_div='100us')
-
-        time.sleep(2)
-        time_data, voltage_data = get_waveform_data(oscilloscope, channel=1)
-
-        if time_data is not None and voltage_data is not None:
-            asyncio.run(send_data_to_server(time_data, voltage_data))
-            plot_waveform(time_data, voltage_data)
+    try:
+        rm = pyvisa.ResourceManager('@py')
+        print("Using pyvisa-py backend")
+        
+        oscilloscope = connect_to_oscilloscope(rm, None)
+        
+        if oscilloscope:
+            setup_oscilloscope(oscilloscope, channel=1, volts_per_div=0.5, time_per_div='100us')
             
+            time.sleep(2)
+            time_data, voltage_data = get_waveform_data(oscilloscope, channel=1)
+            
+            if time_data is not None and voltage_data is not None:
+                asyncio.run(send_data_to_server(time_data, voltage_data))
+                plot_waveform(time_data, voltage_data)
+            else:
+                print("No data available to send to server.")
+            
+            oscilloscope.close()
+            print("Oscilloscope connection closed.")
         else:
-            print("Нет данных для отправки на сервер.")
-
-        oscilloscope.close()
-        print("Соединение с осциллографом закрыто.")
-    else:
-        print("Не удалось подключиться к осциллографу.")
+            print("Failed to connect to oscilloscope.")
+            sys.exit(1)
+            
+    except Exception as e:
+        print(f"Error in main: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

@@ -1,22 +1,36 @@
-local json = require("dkjson")
 local os = require("os")
-
-local config_file = "osc_config.json"
-local pid_file = "python_process.pid"
+local socket = require("socket")
+local json = require("json")
 
 local function show_menu()
+    print("\n=== Выбор устройства ===")
+    print("1. Осциллограф Rigol")
+    print("2. Мультиметр UT803")
+    print("3. Выход")
+    io.write("Выберите устройство: ")
+    return tonumber(io.read("*line"))
+end
+
+local function show_oscilloscope_menu()
     print("\n=== Управление осциллографом ===")
-    print("1. Настроить параметры измерения")
-    print("2. Запустить сбор данных")
-    print("3. Остановить сбор данных")
-    print("4. Просмотреть текущие настройки")
-    print("5. Выход")
+    print("1. Настроить параметры и запустить сбор данных")
+    print("2. Остановить сбор данных")
+    print("3. Назад")
     io.write("Выберите действие: ")
     return tonumber(io.read("*line"))
 end
 
-local function configure_params()
-    print("\n=== Настройка параметров ===")
+local function show_multimeter_menu()
+    print("\n=== Управление мультиметром UT803 ===")
+    print("1. Настроить время измерения и запустить")
+    print("2. Остановить сбор данных")
+    print("3. Назад")
+    io.write("Выберите действие: ")
+    return tonumber(io.read("*line"))
+end
+
+local function get_oscilloscope_params()
+    print("\n=== Настройка параметров осциллографа ===")
     local params = {}
     
     io.write("Номер канала (1-4): ")
@@ -31,68 +45,72 @@ local function configure_params()
     io.write("Уровень триггера (В): ")
     params.trigger_level = tonumber(io.read("*line")) or 1.0
     
-    io.write("Интервал измерений (сек): ")
-    params.interval = tonumber(io.read("*line")) or 2.0
-    
-    local file = io.open(config_file, "w")
-    if file then
-        file:write(json.encode(params, {indent = true}))
-        file:close()
-        print("\nНастройки сохранены в "..config_file)
-    else
-        print("Ошибка сохранения настроек!")
-    end
+    return params
 end
 
-local function is_process_running()
-    return os.execute("pgrep -f test_rigol_linux.py > /dev/null") == 0
+local function get_multimeter_time()
+    print("\n=== Настройка времени измерения ===")
+    io.write("Время измерения (в секундах): ")
+    local time = tonumber(io.read("*line")) or 10
+    return time
 end
 
-local function start_acquisition()
-    if is_process_running() then
-        print("\nСбор данных уже запущен!")
-        return
-    end
-    
-    -- Удаление старого файла pid, если он существует
-    os.execute("rm -f " .. pid_file)
-
-    local cmd = "python3 test_rigol_linux.py & echo $! > " .. pid_file
-    local status = os.execute(cmd)
-    if status == 0 then
-        print("\nЗапуск сбора данных...")
-    else
-        print("\nОшибка запуска сбора данных!")
-    end
+local function start_oscilloscope(params)
+    local cmd = string.format(
+        "python3 test_rigol_linux.py --channel %d --volts_per_div %f --time_per_div %s --trigger_level %f",
+        params.channel, params.volts_per_div, params.time_per_div, params.trigger_level
+    )
+    os.execute(cmd)
+    print("\nЗапуск сбора данных с осциллографа...")
 end
 
-local function stop_acquisition()
-    local file = io.open(pid_file, "r")
-    if file then
-        local pid = file:read("*a")
-        file:close()
+local function start_multimeter()
+    local time = get_multimeter_time()
+    local cmd = string.format("python3 ut803_linux.py --measurement_time %d", time)
+    os.execute(cmd)
+    print("\nЗапуск сбора данных с мультиметра...")
+end
+
+local function stop_oscilloscope()
+    os.execute("pkill -f test_rigol_linux.py")
+    print("\nСбор данных с осциллографа остановлен.")
+end
+
+local function stop_multimeter()
+    os.execute("pkill -f ut803_linux.py")
+    print("\nСбор данных с мультиметра остановлен.")
+end
+
+local function oscilloscope_loop()
+    while true do
+        local choice = show_oscilloscope_menu()
         
-        -- Принудительное завершение процесса
-        local status = os.execute("kill -9 " .. pid)
-        if status == 0 then
-            os.remove(pid_file)
-            print("\nСбор данных остановлен.")
+        if choice == 1 then
+            local params = get_oscilloscope_params()
+            start_oscilloscope(params)
+        elseif choice == 2 then
+            stop_oscilloscope()
+        elseif choice == 3 then
+            return
         else
-            print("\nОшибка остановки сбора данных!")
+            print("\nНеверный выбор! Попробуйте снова.")
         end
-    else
-        print("\nНет активного процесса сбора данных")
     end
 end
 
-local function view_config()
-    print("\nТекущие настройки:")
-    local file = io.open(config_file, "r")
-    if file then
-        print(file:read("*a"))
-        file:close()
-    else
-        print("Настройки не найдены")
+local function multimeter_loop()
+    while true do
+        local choice = show_multimeter_menu()
+        
+        if choice == 1 then
+            start_multimeter()
+        elseif choice == 2 then
+            stop_multimeter()
+        elseif choice == 3 then
+            return
+        else
+            print("\nНеверный выбор! Попробуйте снова.")
+        end
     end
 end
 
@@ -101,16 +119,10 @@ local function main_loop()
         local choice = show_menu()
         
         if choice == 1 then
-            configure_params()
+            oscilloscope_loop()
         elseif choice == 2 then
-            start_acquisition()
+            multimeter_loop()
         elseif choice == 3 then
-            stop_acquisition()
-        elseif choice == 4 then
-            view_config()
-        elseif choice == 5 then
-            -- Остановка сбора данных перед выходом
-            stop_acquisition()
             print("\nВыход из программы...")
             os.exit()
         else
