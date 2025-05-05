@@ -2,133 +2,58 @@ local os = require("os")
 local socket = require("socket")
 local json = require("json")
 
-local function show_menu()
-    print("\n=== Выбор устройства ===")
-    print("1. Осциллограф Rigol")
-    print("2. Мультиметр UT803")
-    print("3. Выход")
-    io.write("Выберите устройство: ")
-    return tonumber(io.read("*line"))
-end
+local test_scenario = {
+    {
+        device = "oscilloscope",
+        params = {
+            channel = 1,
+            volts_per_div = 0.5,
+            time_per_div = "100us",
+            trigger_level = 1.0
+        },
+        duration = 1
+    },
+    {
+        device = "multimeter",
+        params = {
+            measurement_time = 10
+        },
+        duration = 1
+    }
+}
 
-local function show_oscilloscope_menu()
-    print("\n=== Управление осциллографом ===")
-    print("1. Настроить параметры и запустить сбор данных")
-    print("2. Остановить сбор данных")
-    print("3. Назад")
-    io.write("Выберите действие: ")
-    return tonumber(io.read("*line"))
-end
-
-local function show_multimeter_menu()
-    print("\n=== Управление мультиметром UT803 ===")
-    print("1. Настроить время измерения и запустить")
-    print("2. Остановить сбор данных")
-    print("3. Назад")
-    io.write("Выберите действие: ")
-    return tonumber(io.read("*line"))
-end
-
-local function get_oscilloscope_params()
-    print("\n=== Настройка параметров осциллографа ===")
-    local params = {}
-    
-    io.write("Номер канала (1-4): ")
-    params.channel = tonumber(io.read("*line")) or 1
-    
-    io.write("Вольт/деление (например 0.5): ")
-    params.volts_per_div = tonumber(io.read("*line")) or 1.0
-    
-    io.write("Время/деление (например 100us): ")
-    params.time_per_div = io.read("*line") or "100us"
-    
-    io.write("Уровень триггера (В): ")
-    params.trigger_level = tonumber(io.read("*line")) or 1.0
-    
-    return params
-end
-
-local function get_multimeter_time()
-    print("\n=== Настройка времени измерения ===")
-    io.write("Время измерения (в секундах): ")
-    local time = tonumber(io.read("*line")) or 10
-    return time
-end
-
-local function start_oscilloscope(params)
+local function run_oscilloscope_test(params)
     local cmd = string.format(
         "python3 test_rigol_linux.py --channel %d --volts_per_div %f --time_per_div %s --trigger_level %f",
         params.channel, params.volts_per_div, params.time_per_div, params.trigger_level
     )
+    print("\nЗапуск теста осциллографа...")
+    print(cmd)  -- Явно выводим команду
     os.execute(cmd)
-    print("\nЗапуск сбора данных с осциллографа...")
 end
 
-local function start_multimeter()
-    local time = get_multimeter_time()
-    local cmd = string.format("python3 ut803_linux.py --measurement_time %d", time)
+local function run_multimeter_test(params)
+    local cmd = string.format("python3 ut803_linux.py --measurement_time %d", params.measurement_time)
+    print("\nЗапуск теста мультиметра...")
+    print(cmd)  -- Явно выводим команду
     os.execute(cmd)
-    print("\nЗапуск сбора данных с мультиметра...")
 end
 
-local function stop_oscilloscope()
-    os.execute("pkill -f test_rigol_linux.py")
-    print("\nСбор данных с осциллографа остановлен.")
-end
-
-local function stop_multimeter()
-    os.execute("pkill -f ut803_linux.py")
-    print("\nСбор данных с мультиметра остановлен.")
-end
-
-local function oscilloscope_loop()
-    while true do
-        local choice = show_oscilloscope_menu()
-        
-        if choice == 1 then
-            local params = get_oscilloscope_params()
-            start_oscilloscope(params)
-        elseif choice == 2 then
-            stop_oscilloscope()
-        elseif choice == 3 then
-            return
-        else
-            print("\nНеверный выбор! Попробуйте снова.")
+local function run_test_scenario()
+    print("\n=== Запуск автоматического тестового сценария ===")
+    
+    for _, test in ipairs(test_scenario) do
+        if test.device == "oscilloscope" then
+            run_oscilloscope_test(test.params)
+            os.execute("sleep " .. test.duration)
+        elseif test.device == "multimeter" then
+            run_multimeter_test(test.params)
+            os.execute("sleep " .. test.duration)
         end
     end
+    
+    print("\nТестовый сценарий завершен!")
 end
 
-local function multimeter_loop()
-    while true do
-        local choice = show_multimeter_menu()
-        
-        if choice == 1 then
-            start_multimeter()
-        elseif choice == 2 then
-            stop_multimeter()
-        elseif choice == 3 then
-            return
-        else
-            print("\nНеверный выбор! Попробуйте снова.")
-        end
-    end
-end
-
-local function main_loop()
-    while true do
-        local choice = show_menu()
-        
-        if choice == 1 then
-            oscilloscope_loop()
-        elseif choice == 2 then
-            multimeter_loop()
-        elseif choice == 3 then
-            print("\nВыход из программы...")
-            os.exit()
-        else
-            print("\nНеверный выбор! Попробуйте снова.")
-        end
-    end
-end
-
-main_loop()
+-- Немедленно запускаем тестовый сценарий без ожидания ввода
+run_test_scenario()

@@ -1,65 +1,18 @@
-import asyncio
-import websockets
 import json
-import numpy as np
-from sqlalchemy import create_engine, Column, Integer, JSON, Float, String, DateTime, text
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.sqlite import JSON
-from datetime import datetime, timedelta
+import datetime
 import subprocess
-import threading
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
-import os
+from sqlalchemy import create_engine, text
+from datetime import datetime, timedelta
 
 DATABASE_URL = 'sqlite:///my_database.db'
-WEBSOCKET_PORT = 8765
-HTTP_PORT = 8080
-
 engine = create_engine(DATABASE_URL, echo=False)
-Base = declarative_base()
-
-class OscilloscopeData(Base):
-    __tablename__ = 'осциллограф'
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(String)
-    channel = Column(String)
-    voltage = Column(Float)
-    frequency = Column(Float)
-    raw_data = Column(JSON)
-
-
-class MultimeterData(Base):
-    __tablename__ = 'мультиметр'
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(String)
-    value = Column(String)  
-    unit = Column(String)
-    mode = Column(String)
-    range_str = Column(String)
-    measure_type = Column(String)
-    raw_data = Column(JSON)
-
-
-def setup_database():
-    with engine.connect() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS multimeter_data"))
-        conn.execute(text("DROP TABLE IF EXISTS oscilloscope_data"))
-        conn.execute(text("DROP TABLE IF EXISTS waveform_data"))
-        conn.commit()
-    
-    Base.metadata.create_all(engine)
-
-setup_database()
-Session = sessionmaker(bind=engine)
-
-
-measurement_counter = 0
-expected_measurements = 0
 
 class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        """Обработка GET-запросов"""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
         query_params = parse_qs(parsed_path.query)
@@ -79,58 +32,8 @@ class APIHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Страница не найдена")
     
-    def do_POST(self):
-        if self.path == '/save_data':
-            self.handle_save_data()
-        else:
-            self.send_error(404, "Страница не найдена")
-    
-    def handle_save_data(self):
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
-            
-            session = Session()
-            
-            if data['type'] == 'oscilloscope':
-                oscilloscope_data = OscilloscopeData(
-                    timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
-                    channel="CH1",
-                    voltage=round(np.mean(data['data']['voltage']), 2),
-                    frequency=round(1.0 / (data['data']['time'][1] - data['data']['time'][0]) if len(data['data']['time']) > 1 else 0, 2),
-                    raw_data=data['data']
-                )
-                session.add(oscilloscope_data)
-            elif data['type'] == 'multimeter':
-                multimeter_data = MultimeterData(
-                    timestamp=data['data']['timestamp'],
-                    value=data['data']['value'],
-                    unit=data['data']['unit'],
-                    mode=data['data']['mode'],
-                    range_str=data['data']['range_str'],
-                    measure_type=data['data']['measure_type'],
-                    raw_data=data['data']
-                )
-                session.add(multimeter_data)
-            
-            session.commit()
-            session.close()
-            
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({'status': 'success'}).encode('utf-8'))
-            
-        except Exception as e:
-            print(f"Ошибка при сохранении данных: {e}")
-            self.send_error(500, f"Внутренняя ошибка сервера: {e}")
-            if 'session' in locals():
-                session.rollback()
-                session.close()
-    
     def handle_oscilloscope_history(self, query_params):
+        """Получение исторических данных осциллографа"""
         period = query_params.get('period', ['hour'])[0]
         
         try:
@@ -173,16 +76,18 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_multimeter_history(self, query_params):
+        """Получение исторических данных мультиметра"""
         period = query_params.get('period', ['hour'])[0]
         
         try:
             with engine.connect() as conn:
+
                 now = datetime.now()
                 if period == 'hour':
                     start_time = now - timedelta(hours=1)
                 elif period == 'day':
                     start_time = now - timedelta(days=1)
-                else:  # week
+                else:  
                     start_time = now - timedelta(weeks=1)
                 
                 query = text("""
@@ -219,6 +124,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_oscilloscope_db(self):
+        """Получение данных осциллографа из БД"""
         try:
             with engine.connect() as conn:
                 query = text("""
@@ -252,6 +158,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_multimeter_db(self):
+        """Получение данных мультиметра из БД"""
         try:
             with engine.connect() as conn:
                 query = text("""
@@ -287,6 +194,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_run_lua(self, query_params):
+        """Запуск Lua-скрипта"""
         script = query_params.get('script', ['main.lua'])[0]
         
         try:
@@ -315,6 +223,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def serve_static_file(self, path):
+        """Обслуживание статических файлов"""
         if path == '/':
             path = '/index.html'
         
@@ -328,6 +237,7 @@ class APIHandler(BaseHTTPRequestHandler):
             with open('.' + path, 'rb') as file:
                 content = file.read()
             
+            # Отправка ответа
             self.send_response(200)
             self.send_header('Content-type', content_type)
             self.end_headers()
@@ -340,76 +250,12 @@ class APIHandler(BaseHTTPRequestHandler):
             print(f"Ошибка при обслуживании статического файла: {e}")
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
 
-async def run_lua_script(websocket, script_name):
-    try:
-        process = await asyncio.create_subprocess_exec(
-            'lua', script_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        await websocket.send(json.dumps({
-            'output': f'Запуск Lua-скрипта: {script_name}'
-        }))
-        
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            output = line.decode().strip()
-            if output:
-                await websocket.send(json.dumps({
-                    'output': output
-                }))
-        
-        await process.wait()
-        
-        await websocket.send(json.dumps({
-            'output': 'Скрипт завершен'
-        }))
-        
-    except Exception as e:
-        await websocket.send(json.dumps({
-            'output': f'Ошибка при выполнении скрипта: {str(e)}'
-        }))
-
-async def handle_websocket(websocket):
-    try:
-        async for message in websocket:
-            data = json.loads(message)
-            
-            if data.get('action') == 'run_lua':
-                script_name = data.get('script', 'main.lua')
-                await run_lua_script(websocket, script_name)
-            else:
-                pass
-                
-    except websockets.exceptions.ConnectionClosed:
-        print("WebSocket соединение закрыто")
-    except Exception as e:
-        print(f"Ошибка в WebSocket обработчике: {e}")
-
-def run_http_server():
-    server_address = ('', HTTP_PORT)
+def run_http_server(port=8080):
+    """Запуск HTTP-сервера"""
+    server_address = ('', port)
     httpd = HTTPServer(server_address, APIHandler)
-    print(f"HTTP-сервер запущен на порту {HTTP_PORT}")
+    print(f"HTTP-сервер запущен на порту {port}")
     httpd.serve_forever()
 
-async def run_websocket_server():
-    print(f"WebSocket server started at ws://localhost:{WEBSOCKET_PORT}")
-    async with websockets.serve(handle_websocket, 'localhost', WEBSOCKET_PORT):
-        await asyncio.Future()
-
-async def main():
-    http_thread = threading.Thread(target=run_http_server)
-    http_thread.daemon = True
-    http_thread.start()
-    
-    await run_websocket_server()
-
 if __name__ == "__main__":
-    if not os.path.exists('index.html') or not os.path.exists('app.js'):
-        print("Предупреждение: файлы index.html и/или app.js не найдены!")
-        print("Веб-интерфейс не будет работать корректно.")
-    
-    asyncio.run(main())
+    run_http_server()
