@@ -1,4 +1,4 @@
-const WEBSOCKET_URL = 'ws://localhost:8765';
+const WEBSOCKET_URL = 'ws://localhost:8767';
 const MAX_MULTIMETER_POINTS = 100;
 const CHANNEL_COLORS = ['yellow', 'cyan', 'magenta', '#00aaff'];
 const UPDATE_INTERVAL = 1000; 
@@ -41,6 +41,23 @@ function appendToConsole(message) {
     console.scrollTop = console.scrollHeight;
 }
 
+// Функция для запроса данных от осциллографа
+function requestOscilloscopeData() {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+            action: 'get_oscilloscope_data'
+        }));
+    }
+}
+
+
+function startPeriodicUpdates() {
+
+    requestOscilloscopeData();
+
+    setInterval(requestOscilloscopeData, UPDATE_INTERVAL);
+}
+
 function initWebSocket() {
     websocket = new WebSocket(WEBSOCKET_URL);
     
@@ -49,6 +66,8 @@ function initWebSocket() {
         document.getElementById('statusIndicator').classList.remove('disconnected');
         document.getElementById('statusIndicator').title = 'Подключено';
         appendToConsole('> Соединение установлено');
+
+        startPeriodicUpdates();
     };
     
     websocket.onclose = function() {
@@ -67,20 +86,29 @@ function initWebSocket() {
     websocket.onmessage = function(event) {
         try {
             const data = JSON.parse(event.data);
-            
-            if (data.time && data.voltage) {
+
+            if (data.channels || (data.time_base && data.channels)) {
                 updateOscilloscopeData(data);
                 saveToDatabase({
                     type: 'oscilloscope',
                     data: data
                 });
-            } else if (data.value !== undefined) {
+            }
+            else if (data.time && data.voltage) {
+                updateOscilloscopeData(data);
+                saveToDatabase({
+                    type: 'oscilloscope',
+                    data: data
+                });
+            }
+            else if (data.value !== undefined) {
                 updateMultimeterData(data);
                 saveToDatabase({
                     type: 'multimeter',
                     data: data
                 });
-            } else if (data.output) {
+            } 
+            else if (data.output) {
                 appendToConsole('> ' + data.output);
                 
                 const multimeterRegex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В DC AUTO \[Вольтметр\]/;
@@ -145,23 +173,111 @@ function initWebSocket() {
 function updateOscilloscopeData(data) {
     if (!oscilloscopeChart) return;
     
-    if (Array.isArray(data.voltage[0])) {
-        for (let i = 0; i < data.voltage.length; i++) {
-            if (document.getElementById(`ch${i+1}Toggle`).checked) {
-                oscilloscopeChart.data.datasets[i].data = data.voltage[i].map((v, idx) => ({
+    oscilloscopeChart.data.datasets = [];
+    
+    if (data.channels) {
+        for (const [channelName, channelData] of Object.entries(data.channels)) {
+            oscilloscopeChart.data.datasets.push({
+                label: channelName,
+                data: channelData.time.map((t, i) => ({ x: t, y: channelData.voltage[i] })),
+                borderColor: channelData.color,
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1
+            });
+        }
+        updateChannelInfo(data);
+    } 
+    else if (data.time && data.voltage) {
+        if (Array.isArray(data.voltage[0])) {
+            for (let i = 0; i < data.voltage.length; i++) {
+                if (document.getElementById(`ch${i+1}Toggle`) && document.getElementById(`ch${i+1}Toggle`).checked) {
+                    oscilloscopeChart.data.datasets.push({
+                        label: `Канал ${i+1}`,
+                        data: data.voltage[i].map((v, idx) => ({
+                            x: data.time[idx],
+                            y: v
+                        })),
+                        borderColor: CHANNEL_COLORS[i],
+                        backgroundColor: 'transparent',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.1
+                    });
+                }
+            }
+        } else {
+            oscilloscopeChart.data.datasets.push({
+                label: 'Канал 1',
+                data: data.voltage.map((v, idx) => ({
                     x: data.time[idx],
                     y: v
-                }));
-            }
+                })),
+                borderColor: CHANNEL_COLORS[0],
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1
+            });
         }
-    } else {
-        oscilloscopeChart.data.datasets[0].data = data.voltage.map((v, idx) => ({
-            x: data.time[idx],
-            y: v
-        }));
     }
     
     oscilloscopeChart.update();
+}
+
+function updateChannelInfo(data) {
+    const channelInfoElement = document.getElementById('channelInfo');
+    if (!channelInfoElement) return;
+    
+    channelInfoElement.innerHTML = '';
+    
+
+    for (const [channelName, channelData] of Object.entries(data.channels)) {
+        const settings = channelData.settings;
+        const channelCard = document.createElement('div');
+        channelCard.className = 'channel-card';
+        channelCard.style.borderLeft = `5px solid ${channelData.color}`;
+        
+        const voltsDiv = settings.volts_div !== undefined ? `${settings.volts_div} В/дел` : 'Н/Д';
+        const offset = settings.offset !== undefined ? `${settings.offset} В` : 'Н/Д';
+        const coupling = settings.coupling !== undefined ? settings.coupling : 'Н/Д';
+        
+        channelCard.innerHTML = `
+            <div class="channel-header">
+                <h5>${channelName}</h5>
+            </div>
+            <div class="settings-group">
+                <div><strong>Масштаб:</strong> ${voltsDiv}</div>
+                <div><strong>Смещение:</strong> ${offset}</div>
+                <div><strong>Связь:</strong> ${coupling}</div>
+            </div>
+        `;
+        
+        channelInfoElement.appendChild(channelCard);
+    }
+    
+    if (data.time_base !== undefined) {
+        const timeBaseCard = document.createElement('div');
+        timeBaseCard.className = 'channel-card';
+        timeBaseCard.style.borderLeft = '5px solid #ffffff';
+        
+        const timeBase = data.time_base !== undefined ? `${data.time_base} с/дел` : 'Н/Д';
+        const timeOffset = data.time_offset !== undefined ? `${data.time_offset} с` : 'Н/Д';
+        const triggerLevel = data.trigger_level !== undefined ? `${data.trigger_level} В` : 'Н/Д';
+        
+        timeBaseCard.innerHTML = `
+            <div class="channel-header">
+                <h5>Временная развертка</h5>
+            </div>
+            <div class="settings-group">
+                <div><strong>Масштаб:</strong> ${timeBase}</div>
+                <div><strong>Смещение:</strong> ${timeOffset}</div>
+                <div><strong>Уровень триггера:</strong> ${triggerLevel}</div>
+            </div>
+        `;
+        channelInfoElement.appendChild(timeBaseCard);
+    }
 }
 
 function updateMultimeterData(data) {
@@ -198,56 +314,99 @@ function updateMultimeterData(data) {
 }
 
 function initCharts() {
+    const oscilloCtxElement = document.getElementById('oscilloscopeChart');
+    const multiCtxElement = document.getElementById('multimeterChart');
+    const oscilloHistoryCtxElement = document.getElementById('oscilloHistoryChart');
+    const multiHistoryCtxElement = document.getElementById('multimeterHistoryChart');
+    
+    if (!oscilloCtxElement || !multiCtxElement || !oscilloHistoryCtxElement || !multiHistoryCtxElement) {
+        console.error('Ошибка: Не найдены один или несколько элементов canvas для графиков');
+        return;
+    }
 
-    const oscilloCtx = document.getElementById('oscilloscopeChart').getContext('2d');
+    const oscilloCtx = oscilloCtxElement.getContext('2d');
     oscilloscopeChart = new Chart(oscilloCtx, {
         type: 'line',
         data: {
-            datasets: Array(4).fill().map((_, i) => ({
-                label: `Канал ${i+1}`,
-                data: [],
-                borderColor: CHANNEL_COLORS[i],
-                borderWidth: 2,
-                pointRadius: 0,
-                tension: 0.1,
-                fill: false
-            }))
+            datasets: []
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             animation: false,
-            scales: {
-                x: {
-                    type: 'linear',
-                    position: 'bottom',
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                },
-                y: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                }
+            interaction: {
+                mode: 'nearest',
+                axis: 'x',
+                intersect: false
             },
             plugins: {
                 legend: {
+                    position: 'top',
                     labels: {
-                        color: '#eee'
+                        color: '#fff',
+                        font: {
+                            size: 12
+                        }
+                    }
+                },
+                tooltip: {
+                    backgroundColor: 'rgba(0,0,0,0.7)',
+                    bodyFont: {
+                        size: 13
+                    },
+                    titleFont: {
+                        size: 14,
+                        weight: 'bold'
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'linear',
+                    title: {
+                        display: true,
+                        text: 'Время (с)',
+                        color: '#fff',
+                        font: {
+                            size: 14,
+                            weight: 'bold'
+                        }
+                    },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    },
+                    ticks: {
+                        color: '#fff',
+                        font: {
+                            size: 12
+                        }
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Напряжение (В)',
+                        color: '#fff',
+                        font: {
+                            size: 14,
+                            weight: 'bold'
+                        }
+                    },
+                    grid: {
+                        color: 'rgba(255, 255, 255, 0.1)'
+                    },
+                    ticks: {
+                        color: '#fff',
+                        font: {
+                            size: 12
+                        }
                     }
                 }
             }
         }
     });
     
-    const multiCtx = document.getElementById('multimeterChart').getContext('2d');
+    const multiCtx = multiCtxElement.getContext('2d');
     multimeterChart = new Chart(multiCtx, {
         type: 'line',
         data: {
@@ -297,7 +456,7 @@ function initCharts() {
         }
     });
     
-    const oscilloHistoryCtx = document.getElementById('oscilloHistoryChart').getContext('2d');
+    const oscilloHistoryCtx = oscilloHistoryCtxElement.getContext('2d');
     oscilloHistoryChart = new Chart(oscilloHistoryCtx, {
         type: 'line',
         data: {
@@ -343,7 +502,7 @@ function initCharts() {
         }
     });
     
-    const multiHistoryCtx = document.getElementById('multimeterHistoryChart').getContext('2d');
+    const multiHistoryCtx = multiHistoryCtxElement.getContext('2d');
     multimeterHistoryChart = new Chart(multiHistoryCtx, {
         type: 'line',
         data: {
@@ -389,26 +548,45 @@ function initCharts() {
         }
     });
     
-
     for (let i = 1; i <= 4; i++) {
-        document.getElementById(`ch${i}Toggle`).addEventListener('change', function() {
-            oscilloscopeChart.data.datasets[i-1].hidden = !this.checked;
-            oscilloscopeChart.update();
-        });
+        const toggleElement = document.getElementById(`ch${i}Toggle`);
+        if (toggleElement) {
+            toggleElement.addEventListener('change', function() {
+                if (oscilloscopeChart && oscilloscopeChart.data.datasets[i-1]) {
+                    oscilloscopeChart.data.datasets[i-1].hidden = !this.checked;
+                    oscilloscopeChart.update();
+                }
+            });
+        }
+    }
+
+    const oscilloHistoryPeriodElement = document.getElementById('oscilloHistoryPeriod');
+    if (oscilloHistoryPeriodElement) {
+        oscilloHistoryPeriodElement.addEventListener('change', loadOscilloscopeHistory);
     }
     
-
-    document.getElementById('oscilloHistoryPeriod').addEventListener('change', loadOscilloscopeHistory);
-    document.getElementById('multimeterHistoryPeriod').addEventListener('change', loadMultimeterHistory);
+    const multimeterHistoryPeriodElement = document.getElementById('multimeterHistoryPeriod');
+    if (multimeterHistoryPeriodElement) {
+        multimeterHistoryPeriodElement.addEventListener('change', loadMultimeterHistory);
+    }
 }
-
 
 function loadOscilloscopeHistory() {
     const period = document.getElementById('oscilloHistoryPeriod').value;
     
     fetch(`/history/oscilloscope?period=${period}`)
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка HTTP: ' + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
+            if (!data.timestamps || data.timestamps.length === 0) {
+                generateTestOscilloscopeHistory();
+                return;
+            }
+            
             oscilloHistoryChart.data.labels = data.timestamps;
             oscilloHistoryChart.data.datasets[0].data = data.voltages;
             oscilloHistoryChart.update();
@@ -423,8 +601,18 @@ function loadMultimeterHistory() {
     const period = document.getElementById('multimeterHistoryPeriod').value;
     
     fetch(`/history/multimeter?period=${period}`)
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка HTTP: ' + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
+            if (!data.timestamps || data.timestamps.length === 0) {
+                generateTestMultimeterHistory();
+                return;
+            }
+            
             multimeterHistoryChart.data.labels = data.timestamps;
             multimeterHistoryChart.data.datasets[0].data = data.values;
             multimeterHistoryChart.update();
@@ -437,10 +625,22 @@ function loadMultimeterHistory() {
 
 function loadOscilloscopeDB() {
     fetch('/db/oscilloscope')
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка HTTP: ' + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
             const tbody = document.querySelector('#oscilloscopeDataTable tbody');
             tbody.innerHTML = '';
+            
+            if (data.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="5" class="text-center">Нет данных в базе данных</td>';
+                tbody.appendChild(tr);
+                return;
+            }
             
             data.forEach(row => {
                 const tr = document.createElement('tr');
@@ -449,23 +649,36 @@ function loadOscilloscopeDB() {
                     <td>${row.timestamp}</td>
                     <td>${row.channel}</td>
                     <td>${row.voltage}</td>
-                    <td>${row.frequency}</td>
+                    <td>${row.frequency || 0}</td>
                 `;
                 tbody.appendChild(tr);
             });
         })
         .catch(error => {
             console.error('Ошибка при загрузке данных осциллографа из БД:', error);
-            generateTestOscilloscopeDB();
+            const tbody = document.querySelector('#oscilloscopeDataTable tbody');
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки данных</td></tr>';
         });
 }
 
 function loadMultimeterDB() {
     fetch('/db/multimeter')
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка HTTP: ' + response.status);
+            }
+            return response.json();
+        })
         .then(data => {
             const tbody = document.querySelector('#multimeterDataTable tbody');
             tbody.innerHTML = '';
+            
+            if (data.length === 0) {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td colspan="7" class="text-center">Нет данных в базе данных</td>';
+                tbody.appendChild(tr);
+                return;
+            }
             
             data.forEach(row => {
                 const tr = document.createElement('tr');
@@ -483,7 +696,8 @@ function loadMultimeterDB() {
         })
         .catch(error => {
             console.error('Ошибка при загрузке данных мультиметра из БД:', error);
-            generateTestMultimeterDB();
+            const tbody = document.querySelector('#multimeterDataTable tbody');
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center">Ошибка загрузки данных</td></tr>';
         });
 }
 
@@ -580,24 +794,38 @@ function generateTestMultimeterDB() {
 }
 
 function saveToDatabase(data) {
-    fetch('/save_data', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(data)
-    })
-    .catch(error => console.error('Ошибка при сохранении в БД:', error));
+    try {
+        fetch('/save_data', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data)
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка HTTP: ' + response.status);
+            }
+            return response.json();
+        })
+        .then(result => {
+            console.log('Данные успешно сохранены в БД:', result);
+        })
+        .catch(error => {
+            console.error('Ошибка при сохранении в БД:', error);
+        });
+    } catch (e) {
+        console.error('Ошибка при сохранении в БД:', e);
+    }
 }
-function initApp() {
 
+function initApp() {
     initWebSocket();
     initCharts();
     
     loadOscilloscopeHistory();
     loadMultimeterHistory();
     
-
     document.getElementById('database-tab').addEventListener('click', () => {
         loadOscilloscopeDB();
         loadMultimeterDB();

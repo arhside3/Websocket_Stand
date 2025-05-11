@@ -30,6 +30,13 @@
             height: 300px;
             width: 100%;
         }
+        .chart-container.oscilloscope-chart {
+            height: 60vh;
+            background-color: #000;
+            border: 1px solid #333;
+            border-radius: 3px;
+            margin-bottom: 15px;
+        }
         #multimeterValue {
             font-size: 2.5rem;
             font-weight: bold;
@@ -88,6 +95,55 @@
             border-radius: 5px;
             margin-top: 10px;
         }
+
+        .oscilloscope {
+            background-color: #000000;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 0;
+        }
+        .channel-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 15px;
+            padding: 0 10px 10px 10px;
+        }
+        .channel-card {
+            background-color: #222;
+            border: 1px solid #444;
+            border-radius: 5px;
+            padding: 15px;
+            flex: 1;
+            min-width: 180px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .channel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            border-bottom: 1px solid #444;
+            padding-bottom: 8px;
+        }
+        .channel-header h5 {
+            margin: 0;
+            color: #fff;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        .settings-group {
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+            color: #ddd;
+        }
+        .settings-group div {
+            margin-bottom: 6px;
+        }
+        .settings-group strong {
+            color: #00ccff;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -118,37 +174,13 @@
                 <div class="row mt-3">
                     <div class="col-lg-8">
                         <div class="card">
-                            <div class="card-header">Осциллограф (текущий)</div>
-                            <div class="card-body">
-                                <div class="chart-container">
-                                    <canvas id="oscilloscopeChart"></canvas>
-                                </div>
-                                <div class="mt-3">
-                                    <div class="row">
-                                        <div class="col-md-3">
-                                            <div class="form-check form-switch">
-                                                <input class="form-check-input" type="checkbox" id="ch1Toggle" checked>
-                                                <label class="form-check-label" for="ch1Toggle" style="color: yellow;">Канал 1</label>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <div class="form-check form-switch">
-                                                <input class="form-check-input" type="checkbox" id="ch2Toggle">
-                                                <label class="form-check-label" for="ch2Toggle" style="color: cyan;">Канал 2</label>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <div class="form-check form-switch">
-                                                <input class="form-check-input" type="checkbox" id="ch3Toggle">
-                                                <label class="form-check-label" for="ch3Toggle" style="color: magenta;">Канал 3</label>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-3">
-                                            <div class="form-check form-switch">
-                                                <input class="form-check-input" type="checkbox" id="ch4Toggle">
-                                                <label class="form-check-label" for="ch4Toggle" style="color: #00aaff;">Канал 4</label>
-                                            </div>
-                                        </div>
+                            <div class="card-header">Осциллограф Rigol</div>
+                            <div class="card-body p-0">
+                                <div class="oscilloscope">
+                                    <div class="chart-container oscilloscope-chart">
+                                        <canvas id="oscilloscopeChart"></canvas>
+                                    </div>
+                                    <div class="channel-info" id="channelInfo">
                                     </div>
                                 </div>
                             </div>

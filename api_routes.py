@@ -6,9 +6,56 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
+from fastapi import APIRouter, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from pydantic import BaseModel
+from main import Session, OscilloscopeData
 
 DATABASE_URL = 'sqlite:///my_database.db'
 engine = create_engine(DATABASE_URL, echo=False)
+
+router = APIRouter()
+
+class OscilloscopeDataResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    channel: int
+    voltage_data: List[float]
+    time_data: List[float]
+
+@router.get("/data/latest", response_model=OscilloscopeDataResponse)
+def get_latest_data():
+    session = Session()
+    try:
+        latest_data = session.query(OscilloscopeData).order_by(OscilloscopeData.timestamp.desc()).first()
+        if not latest_data:
+            raise HTTPException(status_code=404, detail="Данные не найдены")
+        return latest_data
+    finally:
+        session.close()
+
+@router.get("/data/range")
+def get_data_range(start_time: datetime, end_time: datetime):
+    session = Session()
+    try:
+        data = session.query(OscilloscopeData).filter(
+            OscilloscopeData.timestamp.between(start_time, end_time)
+        ).all()
+        return data
+    finally:
+        session.close()
+
+@router.get("/data/channel/{channel_id}")
+def get_channel_data(channel_id: int, limit: Optional[int] = 100):
+    session = Session()
+    try:
+        data = session.query(OscilloscopeData).filter(
+            OscilloscopeData.channel == channel_id
+        ).order_by(OscilloscopeData.timestamp.desc()).limit(limit).all()
+        return data
+    finally:
+        session.close()
 
 class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -236,8 +283,7 @@ class APIHandler(BaseHTTPRequestHandler):
             
             with open('.' + path, 'rb') as file:
                 content = file.read()
-            
-            # Отправка ответа
+
             self.send_response(200)
             self.send_header('Content-type', content_type)
             self.end_headers()

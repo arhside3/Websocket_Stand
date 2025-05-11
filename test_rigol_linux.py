@@ -13,37 +13,31 @@ from collections import deque
 WEBSOCKET_URI = "ws://localhost:8765"
 VISA_RESOURCE = 'USB0::6833::1230::DS1ZC263402178::0::INSTR'
 
-# --- НАСТРОЙКИ КАНАЛОВ ---
-CHANNELS = [1, 2, 3, 4]  # Можно указать, какие каналы отображать (например, [1,2] или [1,2,3,4])
-CHANNEL_COLORS = ['b', 'g', 'r', 'm']  # Цвета для каналов
+CHANNELS = [1, 2, 3, 4]
+CHANNEL_COLORS = ['b', 'g', 'r', 'm']
 
-# Цвета каналов как на Rigol
-RIGOL_COLORS = ['#ffff00', '#00ffff', '#ff00ff', '#00aaff']  # CH1: yellow, CH2: cyan, CH3: magenta, CH4: light blue
+RIGOL_COLORS = ['#ffff00', '#00ffff', '#ff00ff', '#00aaff']
 
-# Буферы для хранения истории данных для режима непрерывной развертки
+
 class SignalHistory:
     def __init__(self, max_points=10000):
         self.time_history = deque(maxlen=max_points)
         self.voltage_history = deque(maxlen=max_points)
-        self.base_time = 0  # Базовое время для непрерывной шкалы
-        self.sweep_duration = 0.024  # Продолжительность развертки в секундах (12 делений по 2мс)
+        self.base_time = 0
+        self.sweep_duration = 0.024
     
     def add_data(self, time_data, voltage_data):
         if time_data is None or voltage_data is None or len(time_data) == 0 or len(voltage_data) == 0:
             return
             
-        # Корректируем временные метки относительно непрерывной шкалы
         adjusted_time = [t + self.base_time for t in time_data]
         
-        # Добавляем новые данные в историю
         self.time_history.extend(adjusted_time)
         self.voltage_history.extend(voltage_data)
         
-        # Обновляем базовое время для следующего кадра
         last_time = adjusted_time[-1] if adjusted_time else self.base_time
         self.base_time = last_time + time_data[1] - time_data[0] if len(time_data) > 1 else last_time + 0.00002
         
-        # Если буфер истории заполнен, сдвигаем базовое время, чтобы не было больших значений
         if len(self.time_history) >= self.time_history.maxlen * 0.9:
             min_time = self.time_history[0]
             time_shift = min_time + self.sweep_duration / 2
@@ -58,7 +52,6 @@ class SignalHistory:
         self.voltage_history.clear()
         self.base_time = 0
 
-# Глобальные буферы для каждого канала
 signal_histories = {}
 
 async def send_data_to_server(time_data, voltage_data):
@@ -76,8 +69,7 @@ async def send_data_to_server(time_data, voltage_data):
 
 def plot_waveform(time_data, voltage_data, line=None):
     if line is None:
-        # Создаем новый график
-        plt.ion()  # Включаем интерактивный режим
+        plt.ion()
         fig = plt.figure(figsize=(12, 6))
         ax = fig.add_subplot(111)
         line, = ax.plot(time_data, voltage_data, 'b-', linewidth=2)
@@ -86,41 +78,36 @@ def plot_waveform(time_data, voltage_data, line=None):
         ax.set_ylabel('Напряжение (В)')
         ax.grid(True)
         plt.tight_layout()
-        plt.show(block=False)  # Показываем график сразу, не блокируя выполнение
+        plt.show(block=False)
     else:
-        # Обновляем существующий график
         line.set_ydata(voltage_data)
         line.set_xdata(time_data)
         plt.gca().relim()
         plt.gca().autoscale_view()
     
     plt.draw()
-    plt.pause(0.001)  # Небольшая пауза для обновления графика
+    plt.pause(0.001)
     
     return line
 
 def get_waveform_data(scope, channel):
     try:
-        # Настраиваем параметры получения данных для выбранного канала
         scope.write(f":WAV:SOUR CHAN{channel}")
         scope.write(":WAV:MODE RAW")
         scope.write(":WAV:FORM BYTE")
         
-        # Получаем преамбулу как бинарные данные
         scope.write(":WAV:PRE?")
         preamble_raw = scope.read_raw()
         
-        # Декодируем преамбулу, игнорируя проблемные символы
         try:
             preamble = preamble_raw.decode('ascii', errors='ignore')
             preamble_parts = preamble.strip().split(',')
             if len(preamble_parts) >= 10:
                 y_increment = float(preamble_parts[7])
                 y_origin = float(preamble_parts[8])
-                y_reference = 127  # Фиксированное значение для BYTE формата
+                y_reference = 127
                 x_increment = float(preamble_parts[4])
                 x_origin = float(preamble_parts[5])
-                # --- ОТЛАДКА: выводим параметры ---
                 print(f"CH{channel} PREAMBLE: {preamble}")
                 print(f"CH{channel} y_increment={y_increment}, y_origin={y_origin}, y_reference={y_reference}, x_increment={x_increment}, x_origin={x_origin}")
             else:
@@ -133,7 +120,6 @@ def get_waveform_data(scope, channel):
             x_increment = 1e-6
             x_origin = -6e-4
         
-        # Получаем данные осциллограммы
         scope.write(":WAV:DATA?")
         raw_data = scope.read_raw()
         
@@ -157,26 +143,21 @@ def get_waveform_data(scope, channel):
         return None, None
 
 def draw_scope_overlay(ax, scope, active_channels):
-    # Очищаем старые тексты
     [t.remove() for t in ax.texts]
-    # Сбор параметров
     disp = get_display_params(scope)
     timeb = get_timebase_params(scope)
     trig = get_trigger_params(scope)
     ch_params = [get_channel_params(scope, ch) for ch in active_channels]
-    # Формируем текст для вывода (безопасно через .get)
     overlay = []
     overlay.append(f"Display: {disp.get('Type','')}  Grid: {disp.get('Grid','')}  Bright: {disp.get('Brightness','')}")
     overlay.append(f"TimeBase: {timeb.get('Scale','')}  Offset: {timeb.get('Offset','')}  Mode: {timeb.get('Time Base','')}")
     overlay.append(f"Trigger: {trig.get('Mode','')} {trig.get('Type','')} {trig.get('Source','')} {trig.get('Level','')}V {trig.get('Slope','')} {trig.get('Status','')}")
     for idx, chp in enumerate(ch_params):
         overlay.append(f"CH{active_channels[idx]}: Scale {chp.get('Scale','')} Offset {chp.get('Offset','')} Probe {chp.get('Probe','')} Coupling {chp.get('Coupling','')} Unit {chp.get('Unit','')} BWLimit {chp.get('BW Limit','')} Invert {chp.get('Invert','')}")
-    # Рисуем текст на графике (сверху)
     for i, line in enumerate(overlay):
         ax.text(1.01, 1.0 - i*0.07, line, transform=ax.transAxes, fontsize=9, va='top', ha='left', color='yellow', backgroundcolor='black')
 
 def plot_waveforms(time_datas, voltage_datas, lines=None, ax=None, scope=None, active_channels=None):
-    # --- Новый блок: вычисляем общий масштаб по Y для всех каналов ---
     y_min, y_max = None, None
     for v in voltage_datas:
         if v is not None and len(v) > 0:
@@ -185,7 +166,6 @@ def plot_waveforms(time_datas, voltage_datas, lines=None, ax=None, scope=None, a
                 y_min = vmin
             if y_max is None or vmax > y_max:
                 y_max = vmax
-    # Добавим небольшой запас
     if y_min is not None and y_max is not None:
         y_pad = (y_max - y_min) * 0.1 if (y_max - y_min) > 0 else 1
         y_min -= y_pad
@@ -223,7 +203,6 @@ def plot_waveforms(time_datas, voltage_datas, lines=None, ax=None, scope=None, a
             ax.set_ylim(y_min, y_max)
         ax.relim()
         ax.autoscale_view(scalex=True, scaley=False)
-    # Overlay справа — только параметры активного канала
     if scope is not None and active_channels is not None:
         [t.remove() for t in ax.texts]
         chp = get_channel_params(scope, active_channels[0])
@@ -313,11 +292,9 @@ def smooth_data(data, window_size=5):
     """Сглаживание данных с помощью скользящего среднего"""
     if len(data) < window_size:
         return data
-    
-    # Используем np.convolve для скользящего среднего
+
     window = np.ones(window_size) / window_size
     smoothed = np.convolve(data, window, mode='same')
-    # Копируем исходные значения на краях (для избегания краевых эффектов)
     smoothed[:window_size//2] = data[:window_size//2]
     smoothed[-window_size//2:] = data[-window_size//2:]
     return smoothed
@@ -335,28 +312,23 @@ def main():
                 print("Нет активных каналов! Включите хотя бы один канал на осциллографе.")
                 return
             print("Нажмите Ctrl+C для остановки...")
-            # Инициализация графика
             time_datas, voltage_datas = [], []
             for ch in active_channels:
                 t, v = get_waveform_data(scope, ch)
-                # Одинаковое сглаживание для всех каналов (если нужно)
-                # v = smooth_data(v, window_size=5)
+
                 time_datas.append(t)
                 voltage_datas.append(v)
             lines, ax = plot_waveforms(time_datas, voltage_datas, None, None, scope, active_channels)
-            # Основной цикл: real-time график + overlay
             last_overlay_update = time.time()
             while True:
                 try:
                     time_datas, voltage_datas = [], []
                     for ch in active_channels:
                         t, v = get_waveform_data(scope, ch)
-                        # v = smooth_data(v, window_size=5)
+     
                         time_datas.append(t)
                         voltage_datas.append(v)
-                    # Обновляем только линии (без overlay)
                     lines, ax = plot_waveforms(time_datas, voltage_datas, lines, ax, None, None)
-                    # Overlay обновляем раз в 1 сек
                     if time.time() - last_overlay_update > 1.0:
                         draw_scope_overlay(ax, scope, active_channels)
                         plt.draw()
