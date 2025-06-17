@@ -57,6 +57,33 @@ def get_channel_data(channel_id: int, limit: Optional[int] = 100):
     finally:
         session.close()
 
+@router.get("/data/paginated")
+def get_paginated_data(page: int = 1, per_page: int = 10):
+    session = Session()
+    try:
+        # Calculate offset
+        offset = (page - 1) * per_page
+        
+        # Get total count
+        total_count = session.query(OscilloscopeData).count()
+        
+        # Get paginated data
+        data = session.query(OscilloscopeData)\
+            .order_by(OscilloscopeData.timestamp.desc())\
+            .offset(offset)\
+            .limit(per_page)\
+            .all()
+            
+        return {
+            "data": data,
+            "total": total_count,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total_count + per_page - 1) // per_page
+        }
+    finally:
+        session.close()
+
 class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Обработка GET-запросов"""
@@ -138,7 +165,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     start_time = now - timedelta(weeks=1)
                 
                 query = text("""
-                    SELECT timestamp, value
+                    SELECT timestamp, value, raw_data
                     FROM мультиметр
                     WHERE timestamp > :start_time
                     ORDER BY timestamp
@@ -148,13 +175,16 @@ class APIHandler(BaseHTTPRequestHandler):
                 
                 timestamps = []
                 values = []
+                raw_data_list = []
                 for row in result:
                     timestamps.append(row[0])
                     try:
                         value = float(row[1]) if row[1] != "OL" else None
                         values.append(value)
+                        raw_data_list.append(row[2] if row[2] else None)
                     except (ValueError, TypeError):
                         values.append(None)
+                        raw_data_list.append(None)
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
@@ -163,7 +193,8 @@ class APIHandler(BaseHTTPRequestHandler):
                 
                 self.wfile.write(json.dumps({
                     'timestamps': timestamps,
-                    'values': values
+                    'values': values,
+                    'raw_data': raw_data_list
                 }).encode('utf-8'))
         
         except Exception as e:
@@ -171,18 +202,28 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_oscilloscope_db(self):
-        """Получение данных осциллографа из БД"""
+        """Получение данных осциллографа из БД с пагинацией"""
         try:
+            query_params = parse_qs(urlparse(self.path).query)
+            page = int(query_params.get('page', ['1'])[0])
+            per_page = int(query_params.get('per_page', ['50'])[0])
+            offset = (page - 1) * per_page
+
             with engine.connect() as conn:
+                # Получаем общее количество записей
+                count_query = text("SELECT COUNT(*) FROM осциллограф")
+                total_count = conn.execute(count_query).scalar()
+                print(f"[DEBUG] Всего записей в осциллографе: {total_count}")
+
+                # Получаем нужную страницу данных
                 query = text("""
                     SELECT id, timestamp, channel, voltage, frequency
                     FROM осциллограф
                     ORDER BY id DESC
-                    LIMIT 100
+                    LIMIT :limit OFFSET :offset
                 """)
-                
-                result = conn.execute(query)
-                
+                result = conn.execute(query, {"limit": per_page, "offset": offset})
+
                 data = []
                 for row in result:
                     data.append({
@@ -192,52 +233,73 @@ class APIHandler(BaseHTTPRequestHandler):
                         'voltage': row[3],
                         'frequency': row[4]
                     })
-                
+
+                response = {
+                    'data': data,
+                    'total': total_count,
+                    'page': page,
+                    'per_page': per_page,
+                    'total_pages': (total_count + per_page - 1) // per_page
+                }
+
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                
-                self.wfile.write(json.dumps(data).encode('utf-8'))
-        
+                self.wfile.write(json.dumps(response).encode('utf-8'))
+
         except Exception as e:
-            print(f"Ошибка при получении данных осциллографа из БД: {e}")
+            print(f"Ошибка при получении данных осциллографа: {e}")
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_multimeter_db(self):
-        """Получение данных мультиметра из БД"""
+        """Получение данных мультиметра из БД с пагинацией"""
         try:
+            query_params = parse_qs(urlparse(self.path).query)
+            page = int(query_params.get('page', ['1'])[0])
+            per_page = int(query_params.get('per_page', ['50'])[0])
+            offset = (page - 1) * per_page
+
             with engine.connect() as conn:
+                # Получаем общее количество записей
+                count_query = text("SELECT COUNT(*) FROM мультиметр")
+                total_count = conn.execute(count_query).scalar()
+                print(f"[DEBUG] Всего записей в мультиметре: {total_count}")
+
+                # Получаем нужную страницу данных
                 query = text("""
-                    SELECT id, timestamp, value, unit, mode, range_str, measure_type
+                    SELECT id, timestamp, value, raw_data
                     FROM мультиметр
                     ORDER BY id DESC
-                    LIMIT 100
+                    LIMIT :limit OFFSET :offset
                 """)
-                
-                result = conn.execute(query)
-                
+                result = conn.execute(query, {"limit": per_page, "offset": offset})
+
                 data = []
                 for row in result:
                     data.append({
                         'id': row[0],
                         'timestamp': row[1],
                         'value': row[2],
-                        'unit': row[3],
-                        'mode': row[4],
-                        'range_str': row[5],
-                        'measure_type': row[6]
+                        'raw_data': row[3]
                     })
-                
+
+                response = {
+                    'data': data,
+                    'total': total_count,
+                    'page': page,
+                    'per_page': per_page,
+                    'total_pages': (total_count + per_page - 1) // per_page
+                }
+
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                
-                self.wfile.write(json.dumps(data).encode('utf-8'))
-        
+                self.wfile.write(json.dumps(response).encode('utf-8'))
+
         except Exception as e:
-            print(f"Ошибка при получении данных мультиметра из БД: {e}")
+            print(f"Ошибка при получении данных мультиметра: {e}")
             self.send_error(500, f"Внутренняя ошибка сервера: {e}")
     
     def handle_run_lua(self, query_params):

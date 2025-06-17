@@ -13,12 +13,15 @@ import asyncio
 import argparse
 from typing import Optional, Tuple
 from datetime import datetime
+import socket
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('UT803')
+
+sys.stdout.reconfigure(line_buffering=True)
 
 class UT803Reader:
     def __init__(self, measurement_time: int = 10):
@@ -46,8 +49,18 @@ class UT803Reader:
             self.serial_port.setRTS(False)
             self.serial_port.reset_input_buffer()
             self.serial_port.reset_output_buffer()
-            logger.info(f"Successfully connected to RS232 port {port}")
-            return True
+            
+            # Проверяем подключение
+            time.sleep(0.5)
+            self.serial_port.write(b'*IDN?\n')
+            response = self.serial_port.readline()
+            if response:
+                logger.info(f"Successfully connected to RS232 port {port}")
+                return True
+            else:
+                logger.error("No response from device")
+                return False
+                
         except serial.SerialException as e:
             logger.error(f"Failed to connect to RS232: {str(e)}")
             return False
@@ -61,28 +74,91 @@ class UT803Reader:
                     self.device = hid.device()
                     self.device.open(vid, pid)
                     self.device.set_nonblocking(1)
-                    logger.info(f"Successfully connected to HID device {vid:04X}:{pid:04X}")
-                    return True
+                    
+                    # Проверяем подключение
+                    time.sleep(0.5)
+                    data = self.device.read(64, timeout_ms=1000)
+                    if data:
+                        logger.info(f"Successfully connected to HID device {vid:04X}:{pid:04X}")
+                        return True
+                    else:
+                        logger.error("No response from HID device")
+                        self.device.close()
+                        self.device = None
+                        return False
+                        
             logger.error("No HID device found")
             return False
         except Exception as e:
             logger.error(f"Failed to connect to HID: {str(e)}")
+            if self.device:
+                try:
+                    self.device.close()
+                except:
+                    pass
+                self.device = None
             return False
 
     async def connect_websocket(self):
         """Connect to WebSocket server"""
-        try:
-            self.websocket = await websockets.connect('ws://localhost:8765')
-            logger.info("Successfully connected to WebSocket server")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to connect to WebSocket server: {str(e)}")
-            return False
-            
+        max_retries = 5
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Attempting to connect to WebSocket server (attempt {attempt + 1}/{max_retries})...")
+                
+                # Проверяем, запущен ли сервер
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                result = sock.connect_ex(('127.0.0.1', 8767))
+                sock.close()
+                
+                if result != 0:
+                    logger.error(f"WebSocket server is not running on port 8767 (error code: {result})")
+                    logger.error("Please make sure main.py is running")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2
+                    continue
+                
+                logger.info("Server is running, attempting WebSocket connection...")
+                self.websocket = await websockets.connect(
+                    'ws://127.0.0.1:8767',
+                    ping_interval=None,
+                    ping_timeout=None,
+                    close_timeout=5,
+                    max_size=None,
+                    compression=None
+                )
+                logger.info("Successfully connected to WebSocket server")
+                return True
+                
+            except ConnectionRefusedError:
+                logger.error("Connection refused. Make sure the WebSocket server (main.py) is running.")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error("Failed to connect after all attempts. Please start the WebSocket server first.")
+                    return False
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error("Failed to connect to WebSocket server after all attempts")
+                    return False
+
     def decode_ut803_data(self, data: str) -> Tuple[dict, str]:
         """Decode UT803 data format into structured data and human readable format"""
         try:
+            # Очищаем данные от лишних символов
+            data = data.strip().replace('\x00', '')
+            
             parts = data.split(';')
             if len(parts) != 2:
                 return None, "Invalid data format"
@@ -245,6 +321,9 @@ class UT803Reader:
                         print(human_readable)
                     except Exception as e:
                         logger.error(f"Error sending data: {str(e)}")
+                        # Пробуем переподключиться к WebSocket
+                        if not await self.connect_websocket():
+                            break
                 
                 await asyncio.sleep(0.1)
 
