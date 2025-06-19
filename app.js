@@ -21,10 +21,8 @@ let lastMultimeterValue = {
     measure_type: 'Вольтметр'
 };
 
-// Для отслеживания последнего значения мультиметра
 let lastMultimeterNumericValue = null;
 
-// Добавляем отслеживание последних значений каналов
 let lastChannelValues = {
     CH1: { value: null, time: null },
     CH2: { value: null, time: null },
@@ -56,7 +54,16 @@ let oscilloscopeTestData = {
     }
 };
 
-// Функция для запроса данных от осциллографа
+let testUpdateInterval = null;
+
+let oscilloscopeTestLiveData = {
+    CH1: [],
+    CH2: [],
+    CH3: [],
+    CH4: [],
+    index: 0
+};
+
 function requestOscilloscopeData() {
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         websocket.send(JSON.stringify({
@@ -66,18 +73,15 @@ function requestOscilloscopeData() {
 }
 
 function startPeriodicUpdates() {
-    // Запрашиваем данные от осциллографа и мультиметра
     requestOscilloscopeData();
     requestMultimeterData();
     
-    // Устанавливаем интервал обновления
     setInterval(() => {
         requestOscilloscopeData();
         requestMultimeterData();
     }, UPDATE_INTERVAL);
 }
 
-// Функция для запроса данных от мультиметра
 function requestMultimeterData() {
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         websocket.send(JSON.stringify({
@@ -93,15 +97,12 @@ function initWebSocket() {
         document.getElementById('statusIndicator').classList.add('connected');
         document.getElementById('statusIndicator').classList.remove('disconnected');
         document.getElementById('statusIndicator').title = 'Подключено';
-        // appendToConsole('> Соединение установлено');
 
-        // Запрашиваем данные сразу после подключения
         console.log('Запрашиваем данные мультиметра после подключения...');
         websocket.send(JSON.stringify({
             action: 'get_multimeter_data'
         }));
         
-        // Даем время на получение данных мультиметра и затем запрашиваем данные осциллографа
         setTimeout(() => {
             console.log('Запрашиваем данные осциллографа...');
             websocket.send(JSON.stringify({
@@ -116,13 +117,11 @@ function initWebSocket() {
         document.getElementById('statusIndicator').classList.remove('connected');
         document.getElementById('statusIndicator').classList.add('disconnected');
         document.getElementById('statusIndicator').title = 'Соединение разорвано';
-        // appendToConsole('> Соединение разорвано');
         
         setTimeout(initWebSocket, 5000);
     };
     
     websocket.onerror = function(error) {
-        // appendToConsole('> Ошибка: ' + error.message);
         console.error('WebSocket error:', error);
     };
     
@@ -130,42 +129,63 @@ function initWebSocket() {
         console.log('WS message:', event.data);
         try {
             const data = JSON.parse(event.data);
-            
-            if (data.channels || (data.time_base && data.channels)) {
-                console.log('Received oscilloscope data:', data);
-                // Обновляем график в обычном режиме
-                updateOscilloscopeData(data);
-                // Если активен Lua-тест, обновляем и тестовый график
-                if (luaTestActive) {
-                    updateOscilloscopeTestData(data);
+            if (data.type === 'oscilloscope') {
+                parseAndAddOscilloscopeTestData(data.line);
+            } else if (data.type === 'multimeter') {
+                if (data.line) {
+                    const regex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В (DC|AC) AUTO \[Вольтметр\]/;
+                    const match = data.line.match(regex);
+                    if (match) {
+                        const timestamp = match[1];
+                        const value = match[2];
+                        const mode = match[3];
+                        updateMultimeterTestData({
+                            value: value,
+                            unit: 'В',
+                            mode: mode,
+                            range_str: 'AUTO',
+                            measure_type: 'Вольтметр',
+                            timestamp: timestamp
+                        });
+                    } else if (data.line.startsWith('[PROGRESS]')) {
+                        const percent = parseInt(data.line.match(/\[PROGRESS\]\s*(\d+)%/)[1]);
+                        updateTestProgress(percent);
+                    } else {
+                        addToLuaConsoleTest(data.line);
+                    }
+                } else if (data.data) {
+                    updateMultimeterData(data.data);
+                    updateMultimeterTestData(data.data);
                 }
-            }
-            else if (data.type === 'multimeter' && data.data) {
+            } else if (data.channels || (data.time_base && data.channels)) {
+                updateOscilloscopeData(data);
+                if (luaTestActive) {
+                    parseAndAddOscilloscopeTestData(data.line);
+                }
+            } else if (data.type === 'multimeter' && data.data) {
                 updateMultimeterData(data.data);
                 updateMultimeterTestData(data.data);
-            }
-            else if (data.time && data.voltage) {
-                // Обновляем график в обычном режиме
+            } else if (data.time && data.voltage) {
                 updateOscilloscopeData(data);
-            }
-            else if (data.type === 'lua_output') {
-                addToLuaConsoleTest(data.line);
-            }
-            else if (data.type === 'lua_status') {
-                setTimeout(() => { luaTestActive = false; }, 1000); // задержка 1 секунда
+            } else if (data.type === 'lua_output') {
+                if (data.line && data.line.startsWith('[PROGRESS]')) {
+                    const percent = parseInt(data.line.match(/\[PROGRESS\]\s*(\d+)%/)[1]);
+                    updateTestProgress(percent);
+                } else {
+                    addToLuaConsoleTest(data.line);
+                    parseAndAddOscilloscopeTestData(data.line);
+                }
+            } else if (data.type === 'lua_status') {
+                setTimeout(() => { luaTestActive = false; }, 1000);
                 addToLuaConsoleTest(data.success ? '<span style="color:lime">Сценарий завершён успешно</span>' : '<span style="color:red">Ошибка выполнения сценария</span>');
-            }
-            else if (data.output) {
-                // Проверяем, содержит ли вывод данные мультиметра
+                updateTestProgress(100);
+            } else if (data.output) {
                 const multimeterRegex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В (DC|AC) AUTO \[Вольтметр\]/;
                 const match = data.output.match(multimeterRegex);
-                
                 if (match) {
                     const timestamp = new Date(match[1]);
                     const value = parseFloat(match[2]);
                     const mode = match[3];
-                    
-                    // Создаем объект с данными мультиметра
                     const multimeterData = {
                         value: value.toString(),
                         unit: 'В',
@@ -174,12 +194,9 @@ function initWebSocket() {
                         measure_type: 'Вольтметр',
                         timestamp: timestamp
                     };
-                    
-                    // Обновляем график напрямую
                     updateMultimeterData(multimeterData);
                 }
-            }
-            else if (data.type === 'status' && data.data && data.data.status === 'measurements_stopped') {
+            } else if (data.type === 'status' && data.data && data.data.status === 'measurements_stopped') {
                 measurementsActive = false;
             } else if (data.type === 'status' && data.data && data.data.status === 'measurements_started') {
                 measurementsActive = true;
@@ -194,13 +211,11 @@ function updateOscilloscopeData(data) {
     console.log('updateOscilloscopeData called', data);
     if (!oscilloscopeChart || !measurementsActive) return;
     
-    // Handle both new and legacy data formats
     const oscilloscopeData = data.type === 'oscilloscope_data' ? data.data : data;
     
     oscilloscopeChart.data.datasets = [];
     
     if (oscilloscopeData.channels) {
-        // Process each channel's data
         for (const [channelName, channelData] of Object.entries(oscilloscopeData.channels)) {
             if (channelData.voltage && channelData.voltage.length > 0) {
                 const channelNumber = parseInt(channelName.slice(2)) - 1;
@@ -216,7 +231,6 @@ function updateOscilloscopeData(data) {
                     tension: 0.1
                 });
                 
-                // Update channel info if available
                 if (channelData.settings) {
                     updateChannelInfo(channelName, channelData.settings);
                 }
@@ -224,19 +238,19 @@ function updateOscilloscopeData(data) {
         }
     }
     
-    // Update chart scales if time base is available
     if (oscilloscopeData.time_base) {
-        const timeScale = oscilloscopeData.time_base * 6; // 6 divisions
+        const timeScale = oscilloscopeData.time_base * 6;
         oscilloscopeChart.options.scales.x.min = -timeScale;
         oscilloscopeChart.options.scales.x.max = timeScale;
     }
     
-    // Update trigger level if available
     if (oscilloscopeData.trigger_level !== undefined) {
         updateTriggerLevel(oscilloscopeData.trigger_level);
     }
     
     oscilloscopeChart.update('none');
+
+    renderChannelInfoBlock('channelInfo', oscilloscopeData.channels);
 }
 
 function updateChannelInfo(channelName, settings) {
@@ -259,22 +273,18 @@ function updateTriggerLevel(level) {
     }
 }
 
-// Добавляем функцию для парсинга raw_data мультиметра
 function parseMultimeterRawData(rawDataStr, defaultValue) {
     if (!rawDataStr) {
         return defaultValue;
     }
     
     try {
-        // Формат raw_data: "00432;806" - первая часть это основное значение
         const rawParts = rawDataStr.split(';');
         if (rawParts.length >= 1) {
             const rawValue = rawParts[0];
             if (rawValue.length > 0) {
-                // Удаляем ведущие нули и добавляем десятичную точку в правильное место
-                const valueStr = rawValue.replace(/^0+/, ''); // Удаляем ведущие нули
+                const valueStr = rawValue.replace(/^0+/, '');
                 if (valueStr.length > 3) {
-                    // Вставляем десятичную точку в правильное место
                     return parseFloat(valueStr.slice(0, -3) + '.' + valueStr.slice(-3));
                 } else {
                     return parseFloat('0.' + valueStr.padStart(3, '0'));
@@ -288,55 +298,46 @@ function parseMultimeterRawData(rawDataStr, defaultValue) {
     }
 }
 
-// Высокопроизводительная функция обновления графика мультиметра
 function updateMultimeterData(data) {
     console.log('updateMultimeterData called', data);
     if (!measurementsActive) return;
     try {
-        // 1. Обновляем DOM элементы
         document.getElementById('multimeterValue').innerHTML = 
             data.value + ' <span id="multimeterUnit">' + data.unit + '</span>';
         document.getElementById('multimeterMode').textContent = data.mode || '';
         document.getElementById('multimeterRange').textContent = data.range_str || 'AUTO';
         document.getElementById('multimeterType').textContent = data.measure_type || '';
         
-        // 2. Преобразуем значение в число
         let value = parseFloat(data.value);
         if (isNaN(value) || data.value === 'OL') {
             console.warn('Некорректное значение мультиметра:', data.value);
             return;
         }
         
-        // 3. Добавляем новую точку данных
         const timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
         
         multimeterData.timestamps.push(timestamp);
         multimeterData.values.push(value);
         
-        // 4. Ограничиваем количество точек
         while (multimeterData.timestamps.length > MAX_MULTIMETER_POINTS) {
             multimeterData.timestamps.shift();
             multimeterData.values.shift();
         }
         
-        // 5. Обновляем график
         if (multimeterChart) {
-            // Обновляем метки времени и данные
             multimeterChart.data.labels = multimeterData.timestamps;
             multimeterChart.data.datasets[0].data = multimeterData.values.map((v, i) => ({
                 x: multimeterData.timestamps[i],
                 y: v
             }));
             
-            // Устанавливаем диапазон осей
             const minValue = Math.min(...multimeterData.values);
             const maxValue = Math.max(...multimeterData.values);
-            const padding = Math.max((maxValue - minValue) * 0.1, 0.1); // Минимальный отступ 0.1В
+            const padding = Math.max((maxValue - minValue) * 0.1, 0.1);
             
-            multimeterChart.options.scales.y.min = Math.max(0, minValue - padding); // Не опускаем ниже 0 для вольтметра
+            multimeterChart.options.scales.y.min = Math.max(0, minValue - padding);
             multimeterChart.options.scales.y.max = maxValue + padding;
             
-            // Обновляем заголовок графика
             multimeterChart.options.plugins.title = {
                 display: true,
                 text: `Измерения мультиметра (${data.mode} ${data.measure_type})`,
@@ -347,7 +348,6 @@ function updateMultimeterData(data) {
                 }
             };
             
-            // Обновляем график с анимацией
             multimeterChart.update();
         }
     } catch (error) {
@@ -356,7 +356,6 @@ function updateMultimeterData(data) {
 }
 
 function initCharts() {
-    // Инициализация графиков
     const oscilloCtxElement = document.getElementById('oscilloscopeChart');
     const multiCtxElement = document.getElementById('multimeterChart');
     const oscilloHistoryCtxElement = document.getElementById('oscilloHistoryChart');
@@ -367,7 +366,6 @@ function initCharts() {
         return;
     }
 
-    // Инициализация графика осциллографа
     const oscilloCtx = oscilloCtxElement.getContext('2d');
     oscilloscopeChart = new Chart(oscilloCtx, {
         type: 'line',
@@ -442,18 +440,14 @@ function initCharts() {
         }
     });
     
-    // Инициализация оптимизированного графика мультиметра
     const multiCtx = multiCtxElement.getContext('2d');
     
-    // Настройка canvas для лучшей производительности
     multiCtx.canvas.style.width = '100%';
     multiCtx.canvas.style.height = '300px';
-    multiCtx.imageSmoothingEnabled = false; // Отключение сглаживания для увеличения производительности
+    multiCtx.imageSmoothingEnabled = false;
     
-    // Создаем высокопроизводительный график
     multimeterChart = initMultimeterChart(multiCtx);
     
-    // Инициализация остальных графиков
     const oscilloHistoryCtx = oscilloHistoryCtxElement.getContext('2d');
     oscilloHistoryChart = new Chart(oscilloHistoryCtx, {
         type: 'line',
@@ -568,7 +562,6 @@ function initCharts() {
         multimeterHistoryPeriodElement.addEventListener('change', loadMultimeterHistory);
     }
 
-    // Начальная настройка данных мультиметра
     multimeterData = {
         timestamps: [],
         values: []
@@ -716,7 +709,6 @@ function loadMultimeterHistory() {
         .then(data => {
             if (!data.timestamps || data.timestamps.length === 0) {
                 console.log('Нет данных мультиметра в БД за указанный период');
-                // Очищаем график вместо генерации тестовых данных
                 multimeterHistoryChart.data.labels = [];
                 multimeterHistoryChart.data.datasets[0].data = [];
                 multimeterHistoryChart.update();
@@ -729,7 +721,6 @@ function loadMultimeterHistory() {
         })
         .catch(error => {
             console.error('Ошибка при загрузке истории мультиметра:', error);
-            // Очищаем график при ошибке
             multimeterHistoryChart.data.labels = [];
             multimeterHistoryChart.data.datasets[0].data = [];
             multimeterHistoryChart.update();
@@ -820,120 +811,65 @@ function addToLuaConsoleTest(line) {
     }
 }
 
-function updateOscilloscopeTestData(data) {
-    console.log('updateOscilloscopeTestData called with data:', data);
-    if (!data.channels) {
-        console.warn('No channels data in updateOscilloscopeTestData');
-        return;
-    }
-    
-    // Загружаем данные из БД для тестового графика
-    fetch('/history/oscilloscope?period=test')
-        .then(response => response.json())
-        .then(dbData => {
-            if (!dbData || !dbData.timestamps || dbData.timestamps.length === 0) {
-                console.warn('No data from database for test chart');
-                return;
-            }
+function updateTestProgress(percent) {
+    const progressBar = document.getElementById('testProgressBar');
+    if (!progressBar) return;
+    progressBar.style.width = percent + '%';
+    progressBar.textContent = percent + '%';
+    progressBar.setAttribute('aria-valuenow', percent);
+}
 
-            // Обновляем данные для тестового графика
-            oscilloscopeTestData.timestamps = dbData.timestamps;
-            oscilloscopeTestData.channels = {
+function addClearTestChartButton() {
+    const chartElem = document.getElementById('multimeterChartTest');
+    if (!chartElem) return;
+    if (document.getElementById('clearTestChartBtn')) return;
+    
+    const btn = document.createElement('button');
+    btn.id = 'clearTestChartBtn';
+    btn.textContent = 'Очистить графики';
+    btn.style.position = 'absolute';
+    btn.style.top = '10px';
+    btn.style.right = '10px';
+    btn.style.zIndex = 10;
+    btn.className = 'btn btn-sm btn-danger';
+    btn.onclick = function() {
+        multimeterTestData = { timestamps: [], values: [] };
+        if (window.multimeterChartTest) {
+            window.multimeterChartTest.data.labels = [];
+            window.multimeterChartTest.data.datasets[0].data = [];
+            window.multimeterChartTest.update();
+        }
+        
+        oscilloscopeTestData = {
+            timestamps: [],
+            channels: {
                 CH1: { values: [], active: true },
                 CH2: { values: [], active: true },
                 CH3: { values: [], active: true },
                 CH4: { values: [], active: true }
-            };
-
-            // Заполняем данные каналов из БД
-            dbData.channels.forEach(channelData => {
-                const channelName = channelData.name;
-                if (oscilloscopeTestData.channels[channelName]) {
-                    oscilloscopeTestData.channels[channelName].values = channelData.values;
-                    oscilloscopeTestData.channels[channelName].active = true;
-                }
-            });
-
-            // Обновляем график
-            if (window.oscilloscopeChartTest) {
-                console.log('Updating oscilloscopeChartTest with DB data...');
-                const chart = window.oscilloscopeChartTest;
-                chart.data.datasets = [];
-
-                for (const [channelName, channelData] of Object.entries(oscilloscopeTestData.channels)) {
-                    if (channelData.values.length > 0) {
-                        const channelNumber = parseInt(channelName.slice(2)) - 1;
-                        const dataset = {
-                            label: channelName,
-                            data: channelData.values.map((v, i) => ({
-                                x: new Date(oscilloscopeTestData.timestamps[i]),
-                                y: v
-                            })),
-                            borderColor: CHANNEL_COLORS[channelNumber],
-                            backgroundColor: 'transparent',
-                            borderWidth: 2,
-                            pointRadius: 0,
-                            hidden: !channelData.active
-                        };
-                        chart.data.datasets.push(dataset);
-                        console.log(`Added dataset for ${channelName}:`, dataset);
-                    }
-                }
-
-                chart.update();
-                console.log('oscilloscopeChartTest updated successfully with DB data');
             }
-        })
-        .catch(error => {
-            console.error('Error loading test data from database:', error);
-        });
-}
-
-// Обновляем функцию runLuaScript, чтобы она загружала данные из БД
-function runLuaScript() {
-    luaTestActive = true;
-    multimeterTestData = { timestamps: [], values: [] };
-    oscilloscopeTestData = {
-        timestamps: [],
-        channels: {
-            CH1: { values: [], active: true },
-            CH2: { values: [], active: true },
-            CH3: { values: [], active: true },
-            CH4: { values: [], active: true }
+        };
+        if (window.oscilloscopeChartTest) {
+            window.oscilloscopeChartTest.data.datasets = [];
+            window.oscilloscopeChartTest.update();
+        }
+        
+        if (testUpdateInterval) {
+            clearInterval(testUpdateInterval);
+            testUpdateInterval = null;
+        }
+        
+        const progressBar = document.getElementById('testProgressBar');
+        if (progressBar) {
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            progressBar.setAttribute('aria-valuenow', 0);
         }
     };
     
-    // Очищаем график осциллографа
-    if (oscilloscopeChart) {
-        oscilloscopeChart.data.datasets = [];
-        oscilloscopeChart.update();
-    }
-    
-    const luaConsoleTest = document.getElementById('luaConsoleTest');
-    if (luaConsoleTest) luaConsoleTest.innerHTML = '';
-    
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-        console.log('Запуск Lua скрипта...');
-        websocket.send(JSON.stringify({
-            action: 'run_lua',
-            script: 'main.lua'
-        }));
-
-        // Загружаем данные из БД для тестового графика
-        fetch('/history/oscilloscope?period=test')
-            .then(response => response.json())
-            .then(data => {
-                if (data && data.timestamps && data.timestamps.length > 0) {
-                    updateOscilloscopeTestData(data);
-                }
-            })
-            .catch(error => {
-                console.error('Error loading test data:', error);
-            });
-    } else {
-        console.error('WebSocket не подключен');
-        alert('Ошибка: WebSocket не подключен');
-        luaTestActive = false;
+    if (chartElem.parentElement) {
+        chartElem.parentElement.style.position = 'relative';
+        chartElem.parentElement.appendChild(btn);
     }
 }
 
@@ -954,7 +890,6 @@ function initApp() {
         loadMultimeterHistory();
     });
 
-    // Добавляем кнопку обновления мультиметра если её нет
     const multimeterContainer = document.getElementById('multimeterCard');
     if (multimeterContainer) {
         if (!document.getElementById('refreshMultimeterBtn')) {
@@ -971,7 +906,7 @@ function initApp() {
                 requestLatestMultimeterData();
             });
             
-            // При двойном клике - сбрасываем график
+            
             refreshBtn.addEventListener('dblclick', function() {
                 console.log('Сброс графика мультиметра');
                 multimeterData = {
@@ -988,18 +923,15 @@ function initApp() {
                 requestLatestMultimeterData();
             });
             
-            // Добавляем кнопку в верхний правый угол карточки мультиметра
             multimeterContainer.style.position = 'relative';
             multimeterContainer.appendChild(refreshBtn);
         }
     }
     
-    // Запрашиваем текущие данные мультиметра при загрузке
     setTimeout(() => {
         requestLatestMultimeterData();
     }, 1000);
 
-    // Кнопка остановки измерений
     const stopBtn = document.getElementById('stopMeasurementsBtn');
     if (stopBtn) {
         stopBtn.addEventListener('click', function() {
@@ -1008,7 +940,7 @@ function initApp() {
             }
         });
     }
-    // Кнопка старта измерений
+    
     const startBtn = document.getElementById('startMeasurementsBtn');
     if (startBtn) {
         startBtn.addEventListener('click', function() {
@@ -1026,15 +958,18 @@ function initApp() {
         runLuaBtn.className = 'btn btn-primary ms-2';
         runLuaBtn.innerHTML = '<i class="fas fa-play"></i> Запустить Lua скрипт';
         runLuaBtn.addEventListener('click', runLuaScript);
-        // Добавляем кнопку после кнопок управления измерениями
         const buttonContainer = document.querySelector('.col-auto');
         if (buttonContainer) {
             buttonContainer.appendChild(runLuaBtn);
         }
     }
+    
+    const runLuaBtnTest = document.getElementById('runLuaBtnTest');
+    if (runLuaBtnTest) {
+        runLuaBtnTest.addEventListener('click', runLuaScript);
+    }
 }
 
-// Функция для запроса последних данных мультиметра
 function requestLatestMultimeterData() {
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         console.log('Запрашиваем последние данные мультиметра...');
@@ -1043,14 +978,11 @@ function requestLatestMultimeterData() {
         }));
     } else {
         console.warn('WebSocket не подключен, не могу запросить данные мультиметра');
-        // Пробуем через 2 секунды снова
         setTimeout(requestLatestMultimeterData, 2000);
     }
 }
 
-// Функция для инициализации графика мультиметра с оптимальной производительностью
 function initMultimeterChart(ctx) {
-    // Оптимизация для максимальной производительности
     const chart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -1061,9 +993,9 @@ function initMultimeterChart(ctx) {
                 borderColor: '#00ffcc',
                 backgroundColor: 'rgba(0, 255, 204, 0.1)',
                 borderWidth: 2,
-                fill: true,  // Включаем заливку для лучшей визуализации
-                tension: 0.3,   // Небольшое сглаживание для красоты
-                pointRadius: 2,  // Маленькие точки для отслеживания измерений
+                fill: true,
+                tension: 0.3,
+                pointRadius: 2,
                 pointBackgroundColor: '#00ffcc'
             }]
         },
@@ -1071,7 +1003,7 @@ function initMultimeterChart(ctx) {
             responsive: true,
             maintainAspectRatio: false,
             animation: {
-                duration: 300  // Плавное обновление
+                duration: 300
             },
             interaction: {
                 intersect: false,
@@ -1081,20 +1013,20 @@ function initMultimeterChart(ctx) {
                 y: {
                     beginAtZero: false,
                     grid: {
-                        display: true,  // Включаем сетку
+                        display: true,
                         color: 'rgba(255, 255, 255, 0.1)'
                     },
                     ticks: {
                         color: '#aaa',
-                        maxTicksLimit: 8,  // Увеличиваем количество делений
+                        maxTicksLimit: 8,
                         callback: function(value) {
-                            return value.toFixed(3) + ' В';  // Форматируем значения
+                            return value.toFixed(3) + ' В';
                         }
                     }
                 },
                 x: {
                     grid: {
-                        display: true,  // Включаем сетку
+                        display: true,
                         color: 'rgba(255, 255, 255, 0.1)'
                     },
                     ticks: {
@@ -1103,15 +1035,15 @@ function initMultimeterChart(ctx) {
                         maxRotation: 0,
                         callback: function(value, index, values) {
                             const date = new Date(this.getLabelForValue(value));
-                            return date.toTimeString().substr(0, 8);  // Форматируем время
+                            return date.toTimeString().substr(0, 8);
                         }
                     }
                 }
             },
             plugins: {
-                legend: { display: true },  // Показываем легенду
+                legend: { display: true },
                 tooltip: {
-                    enabled: true,  // Включаем подсказки
+                    enabled: true,
                     backgroundColor: 'rgba(0, 0, 0, 0.8)',
                     titleColor: '#fff',
                     bodyColor: '#00ffcc',
@@ -1128,11 +1060,9 @@ function initMultimeterChart(ctx) {
     return chart;
 }
 
-// Функция для обновления отображения значений каналов
 function updateChannelValues() {
     const channelValuesContainer = document.getElementById('channelValues');
     if (!channelValuesContainer) {
-        // Создаем контейнер, если его нет
         const container = document.createElement('div');
         container.id = 'channelValues';
         container.className = 'channel-values mt-3';
@@ -1153,7 +1083,7 @@ function updateChannelValues() {
         if (data.value !== null) {
             const channelDiv = document.createElement('div');
             channelDiv.className = 'channel-value';
-            const opacity = data.active ? '1' : '0.5'; // Уменьшаем прозрачность для неактивных каналов
+            const opacity = data.active ? '1' : '0.5';
             channelDiv.style.cssText = `
                 color: ${CHANNEL_COLORS[parseInt(channelName.slice(2)) - 1]}; 
                 font-family: monospace; 
@@ -1191,7 +1121,6 @@ function toggleDataView(type) {
 function renderDbPagination() {
     const pag = document.getElementById('dbPagination');
     pag.innerHTML = '';
-    // Prev
     const prevLi = document.createElement('li');
     prevLi.className = 'page-item' + (dbCurrentPage === 1 ? ' disabled' : '');
     const prevBtn = document.createElement('button');
@@ -1200,7 +1129,6 @@ function renderDbPagination() {
     prevBtn.onclick = () => { if (dbCurrentPage > 1) { dbCurrentPage--; loadDatabaseData(); } };
     prevLi.appendChild(prevBtn);
     pag.appendChild(prevLi);
-    // Page info
     const infoLi = document.createElement('li');
     infoLi.className = 'page-item disabled';
     const infoSpan = document.createElement('span');
@@ -1208,7 +1136,6 @@ function renderDbPagination() {
     infoSpan.textContent = `${dbCurrentPage} / ${dbTotalPages}`;
     infoLi.appendChild(infoSpan);
     pag.appendChild(infoLi);
-    // Next
     const nextLi = document.createElement('li');
     nextLi.className = 'page-item' + (dbCurrentPage === dbTotalPages ? ' disabled' : '');
     const nextBtn = document.createElement('button');
@@ -1241,7 +1168,6 @@ async function loadDatabaseData() {
             return;
         }
         dbTotalPages = totalPages || 1;
-        // Обновляем таблицу
         const tableBody = document.querySelector(dbCurrentType === 'oscilloscope' ? '#oscilloscopeData tbody' : '#multimeterData tbody');
         tableBody.innerHTML = '';
         data.forEach(item => {
@@ -1253,7 +1179,6 @@ async function loadDatabaseData() {
             });
             tableBody.appendChild(row);
         });
-        // Счетчик
         const dataCount = document.getElementById('dataCount');
         if (dataCount) {
             dataCount.textContent = `Всего записей: ${total}`;
@@ -1270,7 +1195,6 @@ async function loadDatabaseData() {
 
 document.addEventListener('DOMContentLoaded', function() {
     initApp();
-    // Сразу активируем правильный таб и первую страницу
     setActiveDbTab('oscilloscope');
     dbCurrentPage = 1;
     dbCurrentType = 'oscilloscope';
@@ -1324,46 +1248,136 @@ function updateMultimeterTestData(data) {
     }
 }
 
-function addClearTestChartButton() {
-    const chartElem = document.getElementById('multimeterChartTest');
-    if (!chartElem) return;
-    if (document.getElementById('clearTestChartBtn')) return;
-    
-    const btn = document.createElement('button');
-    btn.id = 'clearTestChartBtn';
-    btn.textContent = 'Очистить графики';
-    btn.style.position = 'absolute';
-    btn.style.top = '10px';
-    btn.style.right = '10px';
-    btn.style.zIndex = 10;
-    btn.className = 'btn btn-sm btn-danger';
-    btn.onclick = function() {
-        // Clear multimeter data
-        multimeterTestData = { timestamps: [], values: [] };
-        if (window.multimeterChartTest) {
-            window.multimeterChartTest.data.labels = [];
-            window.multimeterChartTest.data.datasets[0].data = [];
-            window.multimeterChartTest.update();
+function parseAndAddOscilloscopeTestData(line) {
+    try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'oscilloscope_test' && obj.channel && obj.time && obj.voltage) {
+            let settings = obj.settings || {};
+            if (typeof settings.display === 'undefined') settings.display = '0';
+            oscilloscopeTestLiveData[obj.channel] = {
+                time: obj.time,
+                voltage: obj.voltage,
+                color: obj.color || CHANNEL_COLORS[parseInt(obj.channel.slice(2)) - 1],
+                settings: settings
+            };
+            updateOscilloscopeChartTestLive();
+            return;
         }
-        
-        // Clear oscilloscope data
-        oscilloscopeTestData = {
-            timestamps: [],
-            channels: {
-                CH1: { values: [], active: true },
-                CH2: { values: [], active: true },
-                CH3: { values: [], active: true },
-                CH4: { values: [], active: true }
+    } catch (e) {
+        const regex = /Сохранены данные канала (CH\d), среднее напряжение: ([\d.]+)В/;
+        const match = line.match(regex);
+        if (match) {
+            const channel = match[1];
+            const value = parseFloat(match[2]);
+            if (!isNaN(value)) {
+                if (!oscilloscopeTestLiveData[channel] || !Array.isArray(oscilloscopeTestLiveData[channel].time) || !Array.isArray(oscilloscopeTestLiveData[channel].voltage)) {
+                    oscilloscopeTestLiveData[channel] = { time: [], voltage: [], settings: { display: '1' } };
+                }
+                const idx = oscilloscopeTestLiveData[channel].time.length;
+                oscilloscopeTestLiveData[channel].time.push(idx);
+                oscilloscopeTestLiveData[channel].voltage.push(value);
+                updateOscilloscopeChartTestLive();
             }
-        };
-        if (window.oscilloscopeChartTest) {
-            window.oscilloscopeChartTest.data.datasets = [];
-            window.oscilloscopeChartTest.update();
+        }
+    }
+}
+
+function updateOscilloscopeChartTestLive() {
+    if (!window.oscilloscopeChartTest) return;
+    const chart = window.oscilloscopeChartTest;
+    chart.data.datasets = [];
+    const channelsBlock = {};
+    ['CH1', 'CH2', 'CH3', 'CH4'].forEach((ch, i) => {
+        const chData = oscilloscopeTestLiveData[ch];
+        const isActive = chData && chData.settings && chData.settings.display === '1';
+        if (chData && chData.time && chData.voltage && chData.time.length > 0 && isActive) {
+            chart.data.datasets.push({
+                label: ch,
+                data: chData.time.map((t, idx) => ({ x: t, y: chData.voltage[idx] })),
+                borderColor: chData.color || CHANNEL_COLORS[i],
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1
+            });
+        }
+        if (chData && chData.settings) {
+            channelsBlock[ch] = {
+                settings: chData.settings,
+                color: chData.color || CHANNEL_COLORS[i]
+            };
+        }
+    });
+    renderChannelInfoBlock('channelInfoTest', channelsBlock);
+    chart.update();
+}
+
+function runLuaScript() {
+    luaTestActive = true;
+    multimeterTestData = { timestamps: [], values: [] };
+    oscilloscopeTestData = {
+        timestamps: [],
+        channels: {
+            CH1: { values: [], active: true },
+            CH2: { values: [], active: true },
+            CH3: { values: [], active: true },
+            CH4: { values: [], active: true }
         }
     };
-    
-    if (chartElem.parentElement) {
-        chartElem.parentElement.style.position = 'relative';
-        chartElem.parentElement.appendChild(btn);
+    oscilloscopeTestLiveData = { CH1: [], CH2: [], CH3: [], CH4: [], index: 0 };
+    updateOscilloscopeChartTestLive();
+
+    if (oscilloscopeChart) {
+        oscilloscopeChart.data.datasets = [];
+        oscilloscopeChart.update();
     }
+
+    const luaConsoleTest = document.getElementById('luaConsoleTest');
+    if (luaConsoleTest) luaConsoleTest.innerHTML = '';
+
+    if (testUpdateInterval) {
+        clearInterval(testUpdateInterval);
+        testUpdateInterval = null;
+    }
+
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+            action: 'run_lua',
+            script: 'main.lua'
+        }));
+        updateTestProgress(100);
+    } else {
+        alert('Ошибка: WebSocket не подключен');
+        luaTestActive = false;
+    }
+}
+
+function renderChannelInfoBlock(containerId, channelsData) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    Object.entries(channelsData).forEach(([channelName, channelData], idx) => {
+        if (channelData && channelData.settings) {
+            const color = channelData.color || CHANNEL_COLORS[idx] || 'yellow';
+            const settings = channelData.settings;
+            const isActive = settings.display === '1' || settings.display === 1 || settings.display === true;
+            const card = document.createElement('div');
+            card.className = 'channel-card';
+            card.style.borderColor = color;
+            card.style.opacity = isActive ? '1' : '0.5';
+            card.innerHTML = `
+                <div class="channel-header">
+                    <h5 style="color:${color}">${channelName}</h5>
+                    <span style="font-size:0.9em; color:${isActive ? '#2ecc71' : '#e74c3c'}">${isActive ? 'Активен' : 'Отключен'}</span>
+                </div>
+                <div class="settings-group">
+                    <div><strong>Volts/Div:</strong> ${settings.volts_div} В</div>
+                    <div><strong>Offset:</strong> ${settings.offset} В</div>
+                    <div><strong>Coupling:</strong> ${settings.coupling}</div>
+                    <div><strong>Display:</strong> ${settings.display === '1' ? 'On' : 'Off'}</div>
+                </div>
+            `;
+            container.appendChild(card);
+        }
+    });
 }

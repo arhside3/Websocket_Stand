@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
+import sys
+sys.stdout.reconfigure(line_buffering=True)
 import threading
 import pyvisa
 import numpy as np
 import json
 import time
-import sys
 import locale
 import os
 import argparse
@@ -26,13 +27,10 @@ if sys.platform.startswith('win'):
 oscilloscope_lock = threading.Lock()
 
 DATABASE_PATH = 'my_database.db'
-# WEBSOCKET_URL = 'ws://localhost:8767'
 
-# Constants
-WEBSOCKET_PORT = 8768  # Changed from 8767 to avoid conflict
-DATABASE_URL = 'sqlite:///my_database.db'  # Use the existing database
+WEBSOCKET_PORT = 8767
+DATABASE_URL = 'sqlite:///my_database.db'
 
-# Database setup
 engine = create_engine(DATABASE_URL, echo=False)
 Base = declarative_base()
 
@@ -48,9 +46,8 @@ class OscilloscopeData(Base):
     time_offset = Column(Float)
     trigger_level = Column(Float)
 
-# Drop and recreate tables
-Base.metadata.drop_all(engine)  # Drop existing tables
-Base.metadata.create_all(engine)  # Create tables with new schema
+Base.metadata.drop_all(engine)
+Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
 class OscilloscopeReader:
@@ -79,14 +76,11 @@ class OscilloscopeReader:
                     self.oscilloscope = None
                     self.connected = False
                     
-            # Создаем менеджер ресурсов с явным указанием бэкенда для Linux
             self.rm = pyvisa.ResourceManager('@py')
                 
-            # Получаем список доступных устройств
             resources = self.rm.list_resources()
             print("Доступные устройства:", resources)
             
-            # Ищем осциллограф Rigol
             rigol_address = None
             for resource in resources:
                 if 'USB' in resource and ('DS1' in resource or 'DS2' in resource):
@@ -96,22 +90,19 @@ class OscilloscopeReader:
             if rigol_address:
                 print("Подключение к осциллографу по адресу:", rigol_address)
                 try:
-                    # Открываем ресурс с расширенными настройками для Linux
                     self.oscilloscope = self.rm.open_resource(rigol_address)
-                    self.oscilloscope.timeout = 20000  # Увеличиваем таймаут до 20 секунд
+                    self.oscilloscope.timeout = 20000
                     self.oscilloscope.write_termination = '\n'
                     self.oscilloscope.read_termination = '\n'
                     self.oscilloscope.chunk_size = 1024
                     
-                    # Проверяем подключение
                     idn = self.oscilloscope.query("*IDN?")
                     print("Подключено к осциллографу:", idn)
                     
-                    # Устанавливаем базовые настройки для работы
                     self.oscilloscope.write(":WAV:FORM BYTE")
                     self.oscilloscope.write(":WAV:MODE NORM")
                     self.oscilloscope.write(":WAV:POIN 1200")
-                    time.sleep(0.5)  # Даем время на применение настроек
+                    time.sleep(0.5)
                     
                     self.connected = True
                     return True
@@ -159,38 +150,29 @@ class OscilloscopeReader:
             if not self.connected or not self.oscilloscope:
                 return None, None
             try:
-                # Устанавливаем источник данных и ждем
                 self.oscilloscope.write(f":WAV:SOUR CHAN{channel}")
-                time.sleep(0.05)  # Сокращаем время ожидания
+                time.sleep(0.05)
                 
-                # Получаем настройки канала до получения данных
                 volt_scale = float(self.oscilloscope.query(f":CHAN{channel}:SCAL?"))
                 volt_offset = float(self.oscilloscope.query(f":CHAN{channel}:OFFS?"))
                 time_scale = float(self.oscilloscope.query(":TIM:SCAL?"))
                 
-                # Получаем данные в два этапа
                 self.oscilloscope.write(":WAV:DATA?")
-                time.sleep(0.05)  # Сокращаем время ожидания
+                time.sleep(0.05)
                 raw_data = self.oscilloscope.read_raw()
                 
-                # Обрабатываем полученные данные
                 if raw_data:
-                    # Пропускаем заголовок (#8...)
                     data_start = raw_data.find(b'#')
                     if data_start != -1:
                         header_end = raw_data.find(b'\n', data_start)
                         if header_end != -1:
                             raw_data = raw_data[header_end + 1:]
                     
-                # Преобразуем данные - используем быстрый метод
                 try:
-                    # Используем оптимизированное преобразование данных
                     voltage_data = np.frombuffer(raw_data, dtype=np.uint8)
                     voltage_data = (voltage_data - 128) * (volt_scale / 25) + volt_offset
                     
-                    # Создаем временную шкалу с меньшим количеством точек для повышения скорости
-                    # Используем только каждую вторую точку для ускорения
-                    step = 2  # Берем каждую вторую точку
+                    step = 2
                     voltage_data = voltage_data[::step]
                     time_data = np.linspace(-6 * time_scale, 6 * time_scale, len(voltage_data))
                     
@@ -224,7 +206,7 @@ class OscilloscopeReader:
                     "volts_div": volts_div,
                     "offset": offset,
                     "coupling": coupling,
-                "display": display  # Добавляем состояние отображения канала
+                "display": display
                 }
             except pyvisa.errors.VisaIOError as e:
                 print(f"Ошибка при получении настроек канала {channel}: {e}")
@@ -265,14 +247,11 @@ class OscilloscopeReader:
                 self.connected = False
                 return {"error": "Ошибка получения настроек осциллографа"}
             
-            # Проверяем все каналы (1-4)
             for channel in range(1, 5):
                 settings = self.get_channel_settings(channel)
                 if 'error' not in settings:
-                    # Проверяем, активен ли канал
                     is_active = settings.get('display') == '1'
                     
-                    # Получаем данные только если канал активен
                     if is_active:
                         time_data, voltage_data = self.get_channel_data(channel)
                         if time_data is not None and voltage_data is not None:
@@ -283,7 +262,6 @@ class OscilloscopeReader:
                                         "color": self.channel_colors[channel]
                                     }
                         else:
-                            # Для неактивных каналов отправляем только настройки
                             oscilloscope_data["data"]["channels"][f"CH{channel}"] = {
                             "settings": settings,
                             "color": self.channel_colors[channel]
@@ -319,26 +297,44 @@ def save_to_database(data):
     session = Session()
     if 'data' in data and 'channels' in data['data']:
         for channel_name, channel_data in data['data']['channels'].items():
+            settings = channel_data.get('settings', {})
+            display = settings.get('display', '0')
+            settings['display'] = display
+            channel_data['settings'] = settings
             if 'voltage' in channel_data and len(channel_data['voltage']) > 0:
                 avg_voltage = np.mean(channel_data['voltage'])
-            
                 record = OscilloscopeData(
                     timestamp=datetime.now(),
                     channel=channel_name,
                     voltage=float(avg_voltage),
-                    frequency=0.0,  # Default value
+                    frequency=0.0,
                     raw_data=channel_data,
                     time_base=data['data']['time_base'],
                     time_offset=data['data']['time_offset'],
                     trigger_level=data['data']['trigger_level']
                 )
                 session.add(record)
-                print(f"Сохранены данные канала {channel_name}, среднее напряжение: {avg_voltage:.3f}В")
+                print(json.dumps({
+                    "type": "oscilloscope_test",
+                    "channel": channel_name,
+                    "time": channel_data.get('time', []),
+                    "voltage": channel_data.get('voltage', []),
+                    "color": channel_data.get('color'),
+                    "settings": settings
+                }))
+            else:
+                print(json.dumps({
+                    "type": "oscilloscope_test",
+                    "channel": channel_name,
+                    "time": [],
+                    "voltage": [],
+                    "color": channel_data.get('color'),
+                    "settings": settings
+                }))
 
     session.commit()
     return True
 
-# WebSocket server
 active_websockets = set()
 
 async def handle_websocket(websocket, path):
@@ -411,32 +407,26 @@ async def main_async(args):
         print("Не удалось подключиться к осциллографу")
         return
 
-    # Запускаем WebSocket сервер
     server = await websockets.serve(handle_websocket, "0.0.0.0", 8768)
     print("WebSocket сервер запущен на ws://0.0.0.0:8768")
 
     try:
-        # Основной цикл измерений
         for i in range(args.samples):
             print(f"\nПолучение выборки {i+1}/{args.samples}")
             
-            # Получаем данные с осциллографа
             oscilloscope_data = reader.get_oscilloscope_data()
             if 'error' in oscilloscope_data:
                 print(f"Ошибка получения данных: {oscilloscope_data['error']}")
                 continue
 
-            # Сохраняем данные в БД
                 print("Сохраняем данные в БД напрямую...")
             if save_to_database(oscilloscope_data):
                     print("Данные успешно сохранены в БД напрямую")
             else:
                 print("Ошибка при сохранении данных в БД")
 
-            # --- ВАЖНО: отправляем данные всем WebSocket клиентам ---
-            await update_oscilloscope_data()  # Эта функция отправляет данные всем клиентам
+            await update_oscilloscope_data()
             
-            # Ждем указанный интервал
             await asyncio.sleep(args.interval)
 
     except KeyboardInterrupt:
@@ -445,7 +435,6 @@ async def main_async(args):
         print(f"Ошибка в основном цикле: {e}")
         traceback.print_exc()
     finally:
-        # Закрываем соединения
         if reader:
             reader.close()
             server.close()

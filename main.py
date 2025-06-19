@@ -76,20 +76,15 @@ def setup_database():
 setup_database()
 Session = sessionmaker(bind=engine)
 
-# В начале файла добавим глобальную переменную для отслеживания состояния сбора данных
 is_data_collection_active = False
 
-# ... existing code ...
 is_multimeter_collection_active = False
 
-# Инициализация блокировки для безопасного доступа к сессии
 session_lock = asyncio.Lock()
 
-# Создаем асинхронный движок для работы с БД
 async_engine = create_engine(DATABASE_URL, echo=False, future=True)
 async_session = sessionmaker(bind=async_engine, expire_on_commit=False)
 
-# Также определим класс для асинхронного хранения записей мультиметра
 class MultimeterMeasurement:
     def __init__(self, value, unit, mode, range_str, measure_type, raw_data, timestamp):
         self.value = value
@@ -156,7 +151,6 @@ def save_oscilloscope_data(data, force_save=False):
 
 def save_multimeter_data(data, force_save=False):
     """Сохраняет данные мультиметра в базу данных"""
-    # Отключаем сохранение в БД для текущих данных
     return True
 
 def get_oscilloscope_data_from_db(limit=100):
@@ -214,8 +208,46 @@ def get_oscilloscope_history(period='hour'):
     try:
         now = datetime.now()
         if period == 'test':
-            # Для тестового графика — последние 10 записей
             results = session.query(OscilloscopeData).order_by(OscilloscopeData.id.desc()).limit(10).all()
+            
+            if not results:
+                print("Нет данных осциллографа в БД для тестового графика, генерируем тестовые данные")
+                timestamps = []
+                test_channels = {
+                    "CH1": {"name": "CH1", "values": []},
+                    "CH2": {"name": "CH2", "values": []},
+                    "CH3": {"name": "CH3", "values": []},
+                    "CH4": {"name": "CH4", "values": []}
+                }
+                
+                phase_shift = np.random.random() * np.pi
+                amplitude_shift = np.random.random() * 0.5 + 0.75
+                
+                for i in range(10):
+                    timestamp = (now - timedelta(seconds=i*5)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                    timestamps.append(timestamp)
+                    
+                    test_channels["CH1"]["values"].append(
+                        3.0 * amplitude_shift * np.sin(i/3.0 + phase_shift) + 3.0 + np.random.random() * 0.2 - 0.1
+                    )
+                    
+                    test_channels["CH2"]["values"].append(
+                        2.0 * amplitude_shift * np.cos(i/2.0 + phase_shift) + 2.0 + np.random.random() * 0.2 - 0.1
+                    )
+                    
+                    test_channels["CH3"]["values"].append(
+                        (i % 5) * 0.5 * amplitude_shift + 1.0 + np.random.random() * 0.1 - 0.05
+                    )
+                    
+                    test_channels["CH4"]["values"].append(
+                        4.0 if (i + int(phase_shift * 5)) % 4 < 2 else 1.0 + np.random.random() * 0.2 - 0.1
+                    )
+                
+                return {
+                    'timestamps': list(reversed(timestamps)),
+                    'channels': list(test_channels.values())
+                }
+            
             timestamps = []
             channels = {}
             for row in reversed(results):
@@ -272,7 +304,6 @@ def get_multimeter_history(period='hour'):
 
         start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Получаем данные из БД с сортировкой по времени
         results = session.query(MultimeterData)\
             .filter(MultimeterData.timestamp >= start_time_str)\
             .order_by(MultimeterData.timestamp.asc())\
@@ -284,7 +315,6 @@ def get_multimeter_history(period='hour'):
         
         for row in results:
             try:
-                # Преобразуем значение в число
                 value = float(row.value) if row.value != 'OL' else None
                 if value is not None:
                     timestamps.append(row.timestamp)
@@ -293,7 +323,6 @@ def get_multimeter_history(period='hour'):
             except (ValueError, TypeError):
                 continue
         
-        # Если данных нет, возвращаем пустые массивы
         if not timestamps:
             print("Нет данных мультиметра в БД за указанный период")
             return {'timestamps': [], 'values': [], 'raw_data': []}
@@ -339,14 +368,11 @@ class OscilloscopeVisualizer:
                     self.oscilloscope = None
                     self.connected = False
                     
-            # Создаем менеджер ресурсов с явным указанием бэкенда для Linux
             self.rm = pyvisa.ResourceManager('@py')
                 
-            # Получаем список доступных устройств
             resources = self.rm.list_resources()
             print("Доступные устройства:", resources)
             
-            # Ищем осциллограф Rigol
             rigol_address = None
             for resource in resources:
                 if 'USB' in resource and ('DS1' in resource or 'DS2' in resource):
@@ -356,22 +382,19 @@ class OscilloscopeVisualizer:
             if rigol_address:
                 print("Подключение к осциллографу по адресу:", rigol_address)
                 try:
-                    # Открываем ресурс с расширенными настройками для Linux
                     self.oscilloscope = self.rm.open_resource(rigol_address)
-                    self.oscilloscope.timeout = 20000  # Увеличиваем таймаут до 20 секунд
+                    self.oscilloscope.timeout = 20000
                     self.oscilloscope.write_termination = '\n'
                     self.oscilloscope.read_termination = '\n'
                     self.oscilloscope.chunk_size = 1024
                     
-                    # Проверяем подключение
                     idn = self.oscilloscope.query("*IDN?")
                     print("Подключено к осциллографу:", idn)
                     
-                    # Устанавливаем базовые настройки для работы
                     self.oscilloscope.write(":WAV:FORM BYTE")
                     self.oscilloscope.write(":WAV:MODE NORM")
                     self.oscilloscope.write(":WAV:POIN 1200")
-                    time.sleep(0.5)  # Даем время на применение настроек
+                    time.sleep(0.5)
                     
                     self.connected = True
                     return True
@@ -421,38 +444,29 @@ class OscilloscopeVisualizer:
             
             with oscilloscope_lock:
                 try:
-                    # Устанавливаем источник данных и ждем
                     self.oscilloscope.write(f":WAV:SOUR CHAN{channel}")
-                    time.sleep(0.05)  # Сокращаем время ожидания
+                    time.sleep(0.05)
                     
-                    # Получаем настройки канала до получения данных
                     volt_scale = float(self.oscilloscope.query(f":CHAN{channel}:SCAL?"))
                     volt_offset = float(self.oscilloscope.query(f":CHAN{channel}:OFFS?"))
                     time_scale = float(self.oscilloscope.query(":TIM:SCAL?"))
                     
-                    # Получаем данные в два этапа
                     self.oscilloscope.write(":WAV:DATA?")
-                    time.sleep(0.05)  # Сокращаем время ожидания
+                    time.sleep(0.05)
                     raw_data = self.oscilloscope.read_raw()
                     
-                    # Обрабатываем полученные данные
                     if raw_data:
-                        # Пропускаем заголовок (#8...)
                         data_start = raw_data.find(b'#')
                         if data_start != -1:
                             header_end = raw_data.find(b'\n', data_start)
                             if header_end != -1:
                                 raw_data = raw_data[header_end + 1:]
                         
-                        # Преобразуем данные - используем быстрый метод
                         try:
-                            # Используем оптимизированное преобразование данных
                             voltage_data = np.frombuffer(raw_data, dtype=np.uint8)
                             voltage_data = (voltage_data - 128) * (volt_scale / 25) + volt_offset
                             
-                            # Создаем временную шкалу с меньшим количеством точек для повышения скорости
-                            # Используем только каждую вторую точку для ускорения
-                            step = 2  # Берем каждую вторую точку
+                            step = 2
                             voltage_data = voltage_data[::step]
                             time_data = np.linspace(-6 * time_scale, 6 * time_scale, len(voltage_data))
                             
@@ -474,7 +488,6 @@ class OscilloscopeVisualizer:
 
     async def get_channel_data_async(self, channel):
         """Асинхронная обертка для получения данных с канала"""
-        # Запускаем синхронную функцию в отдельном потоке с использованием ThreadPoolExecutor
         loop = asyncio.get_event_loop()
         time_data, voltage_data = await loop.run_in_executor(
             None, lambda: self.get_channel_data(channel)
@@ -498,7 +511,7 @@ class OscilloscopeVisualizer:
                         "volts_div": volts_div,
                         "offset": offset,
                         "coupling": coupling,
-                        "display": display  # Добавляем состояние отображения канала
+                        "display": display
                     }
                 except pyvisa.errors.VisaIOError as e:
                     print(f"Ошибка при получении настроек канала {channel}: {e}")
@@ -511,7 +524,6 @@ class OscilloscopeVisualizer:
 
     async def get_channel_settings_async(self, channel):
         """Асинхронная обертка для получения настроек канала"""
-        # Запускаем синхронную функцию в отдельном потоке
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: self.get_channel_settings(channel))
 
@@ -542,14 +554,11 @@ class OscilloscopeVisualizer:
                 self.connected = False
                 return {"error": "Ошибка получения настроек осциллографа"}
             
-            # Проверяем все каналы (1-4)
             for channel in range(1, 5):
                 settings = self.get_channel_settings(channel)
                 if 'error' not in settings:
-                    # Проверяем, активен ли канал
                     is_active = settings.get('display') == '1'
                     
-                    # Получаем данные только если канал активен
                     if is_active:
                         time_data, voltage_data = self.get_channel_data(channel)
                         if time_data is not None and voltage_data is not None:
@@ -560,7 +569,6 @@ class OscilloscopeVisualizer:
                                 "color": self.channel_colors[channel]
                             }
                     else:
-                        # Для неактивных каналов отправляем только настройки
                         oscilloscope_data["channels"][f"CH{channel}"] = {
                             "settings": settings,
                             "color": self.channel_colors[channel]
@@ -575,7 +583,6 @@ class OscilloscopeVisualizer:
             traceback.print_exc()
             return {"error": "Ошибка получения данных с осциллографа"}
 
-# HTTP-сервер
 class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self.error_message_format = '''
@@ -593,14 +600,12 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
         super().__init__(*args, **kwargs)
 
     def end_headers(self):
-        # Добавляем CORS заголовки
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         super().end_headers()
 
     def do_OPTIONS(self):
-        # Обработка preflight запросов
         self.send_response(200)
         self.end_headers()
 
@@ -702,9 +707,8 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
 
 global_visualizer = None
 global_multimeter = None
-last_multimeter_values = {}  # Словарь для хранения последних отправленных значений по каждому соединению
+last_multimeter_values = {}
 
-# Глобальные переменные для управления состоянием
 is_measurement_active = True
 is_multimeter_running = True
 is_oscilloscope_running = True
@@ -714,29 +718,25 @@ multimeter_task = None
 def run_lua_script_sync(script_name: str) -> dict:
     """Synchronous version of run_lua_script that runs in a separate process"""
     try:
-        # Set up environment for Lua
         env = os.environ.copy()
         env['LUA_PATH'] = '?.lua;' + env.get('LUA_PATH', '')
         
-        # Run Lua script
         process = subprocess.Popen(
             ['lua', script_name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            preexec_fn=os.setsid  # Create new process group
+            preexec_fn=os.setsid
         )
         
-        # Get output with timeout
         try:
-            stdout, stderr = process.communicate(timeout=300)  # 5 minutes timeout
+            stdout, stderr = process.communicate(timeout=300)
             return {
                 'success': True,
                 'output': stdout.decode('utf-8'),
                 'error': stderr.decode('utf-8')
             }
         except subprocess.TimeoutExpired:
-            # Kill the process group if timeout
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             return {
                 'success': False,
@@ -802,7 +802,30 @@ async def run_lua_script_stream_async(script_name, websocket):
     success = await loop.run_in_executor(None, run_lua_script_stream, script_name, send_line, websocket, loop)
     await websocket.send(json.dumps({'type': 'lua_status', 'success': success}))
 
-# WebSocket обработчик
+async def run_lua_test_parallel_async(script_name, websocket):
+    """Запускает main.lua, разбирает вывод и отправляет данные по типу устройства в WebSocket"""
+    process = await asyncio.create_subprocess_exec(
+        'lua', script_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT
+    )
+    try:
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            decoded = line.decode('utf-8').rstrip()
+            if decoded.startswith('[OSC]'):
+                await websocket.send(json.dumps({'type': 'oscilloscope', 'line': decoded[5:].lstrip()}))
+            elif decoded.startswith('[MULT]'):
+                await websocket.send(json.dumps({'type': 'multimeter', 'line': decoded[6:].lstrip()}))
+            else:
+                await websocket.send(json.dumps({'type': 'lua_output', 'line': decoded}))
+        returncode = await process.wait()
+        await websocket.send(json.dumps({'type': 'lua_status', 'success': returncode == 0}))
+    except Exception as e:
+        await websocket.send(json.dumps({'type': 'lua_status', 'success': False, 'error': str(e)}))
+
 async def handle_websocket(websocket):
     global global_multimeter, global_visualizer, is_measurement_active
     print("Клиент подключен к WebSocket")
@@ -815,14 +838,12 @@ async def handle_websocket(websocket):
                 if action == 'run_lua':
                     script_name = data.get('script', 'main.lua')
                     print(f"Запуск Lua скрипта: {script_name}")
-                    await run_lua_script_stream_async(script_name, websocket)
+                    await run_lua_test_parallel_async(script_name, websocket)
                 
                 elif action == 'start_measurements':
                     is_measurement_active = True
-                    # Переподключаемся к осциллографу, если не подключен
                     if global_visualizer and not global_visualizer.connected:
                         global_visualizer.connect_to_oscilloscope()
-                    # Переподключаем мультиметр, если не подключен
                     if not global_multimeter:
                         global_multimeter = UT803Reader()
                         global_multimeter.connect_serial() or global_multimeter.connect_hid()
@@ -833,7 +854,6 @@ async def handle_websocket(websocket):
                 
                 elif action == 'stop_measurements':
                     is_measurement_active = False
-                    # Disconnecting oscilloscope
                     if global_visualizer and global_visualizer.oscilloscope:
                         try:
                             global_visualizer.oscilloscope.close()
@@ -842,7 +862,6 @@ async def handle_websocket(websocket):
                         global_visualizer.oscilloscope = None
                         global_visualizer.connected = False
                         print("Соединение с осциллографом разорвано.")
-                    # Disconnecting multimeter
                     if global_multimeter:
                         try:
                             global_multimeter.disconnect()
@@ -911,7 +930,7 @@ async def update_oscilloscope_data():
 async def run_oscilloscope():
     """Функция для работы с осциллографом"""
     global global_visualizer, active_websockets, is_oscilloscope_running, is_measurement_active
-    oscilloscope_interval = 0.1  # Уменьшаем интервал до 100мс для более частого обновления
+    oscilloscope_interval = 0.1
     last_oscilloscope_update = 0
     
     while True:
@@ -927,8 +946,8 @@ async def run_oscilloscope():
                 await update_oscilloscope_data()
         except Exception as e:
             print(f"Ошибка в цикле осциллографа: {e}")
-            await asyncio.sleep(0.1)  # Увеличиваем задержку при ошибке
-        await asyncio.sleep(0.01)  # Уменьшаем базовую задержку
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.01)
 
 async def run_multimeter():
     """Асинхронно запускает чтение мультиметра в отдельном потоке и отправляет данные клиентам"""
@@ -961,14 +980,13 @@ async def run_multimeter():
                 if not is_measurement_active:
                     await asyncio.sleep(0.1)
                     continue
-                # Чтение данных мультиметра в отдельном потоке
                 measurement, human_readable = await loop.run_in_executor(
                     pool,
                     lambda: global_multimeter.read_serial() if global_multimeter.serial_port else global_multimeter.read_hid()
                 )
                 
                 if measurement and human_readable:
-                    last_live_multimeter_data = measurement  # Сохраняем последнее живое значение
+                    last_live_multimeter_data = measurement
                     print(f"Отправка данных мультиметра: {measurement}")
                     if active_websockets:
                         await send_to_all_websocket_clients({
@@ -976,7 +994,6 @@ async def run_multimeter():
                             "data": measurement
                         })
                 await asyncio.sleep(0.02)
-        # После выхода из цикла
         if global_multimeter:
             global_multimeter.disconnect()
             global_multimeter = None
@@ -990,12 +1007,11 @@ async def run_multimeter():
 
 def save_multimeter_data(data, force_save=False):
     """Сохраняет данные мультиметра в базу данных"""
-    # Отключаем сохранение в БД для текущих данных
     return True
 
 def run_http_server():
     try:
-        server_address = ('0.0.0.0', HTTP_PORT)  # Принимаем подключения со всех интерфейсов
+        server_address = ('0.0.0.0', HTTP_PORT)
         httpd = HTTPServer(server_address, CustomHTTPRequestHandler)
         print(f"HTTP-сервер запущен на http://0.0.0.0:{HTTP_PORT}")
         httpd.serve_forever()
@@ -1008,14 +1024,14 @@ async def run_websocket_server():
     try:
         async with websockets.serve(
             handle_websocket, 
-            '0.0.0.0',  # Принимаем подключения со всех интерфейсов
+            '0.0.0.0',
             WEBSOCKET_PORT,
-            ping_interval=None,  # Отключаем ping для предотвращения таймаутов
+            ping_interval=None,
             ping_timeout=None,
-            max_size=None,  # Убираем ограничение на размер сообщений
-            max_queue=32,   # Увеличиваем размер очереди сообщений
-            compression=None,  # Отключаем сжатие для отладки
-            origins=None  # Разрешаем подключения с любого origin
+            max_size=None,
+            max_queue=32,
+            compression=None,
+            origins=None
         ):
             print("WebSocket сервер успешно запущен и готов принимать подключения")
             await asyncio.Future()
@@ -1030,13 +1046,11 @@ async def main():
     
     try:
         print("Initializing devices...")
-        # Инициализация осциллографа
         print("Инициализация визуализатора осциллографа")
         global global_visualizer
         global_visualizer = OscilloscopeVisualizer()
         global_visualizer.connect_to_oscilloscope()
         
-        # Инициализация мультиметра
         print("Инициализация мультиметра")
         global global_multimeter
         global_multimeter = UT803Reader()
@@ -1047,7 +1061,6 @@ async def main():
         else:
             print("Не удалось подключиться к мультиметру")
         
-        # Запуск WebSocket сервера
         print("Starting WebSocket server...")
         async with websockets.serve(
             handle_websocket,
@@ -1056,31 +1069,27 @@ async def main():
             ping_interval=20,
             ping_timeout=20,
             close_timeout=20,
-            max_size=2**20,  # 1MB
-            max_queue=2**10,  # 1024 messages
+            max_size=2**20,
+            max_queue=2**10,
             compression=None
         ) as websocket_server:
             print("WebSocket server started at ws://0.0.0.0:8767")
             
-            # Запуск HTTP сервера в отдельном потоке
             print("Starting HTTP server...")
             http_thread = threading.Thread(target=run_http_server)
             http_thread.daemon = True
             http_thread.start()
             print(f"HTTP-сервер запущен на http://0.0.0.0:{HTTP_PORT}")
             
-            # Запуск мультиметра в отдельном потоке
             is_multimeter_running = True
             is_measurement_active = True
             multimeter_task = asyncio.create_task(run_multimeter())
             
             try:
-                # Ожидание завершения
-                await asyncio.Future()  # run forever
+                await asyncio.Future()
             except asyncio.CancelledError:
                 print("Получен сигнал завершения работы")
             finally:
-                # Остановка мультиметра
                 is_multimeter_running = False
                 is_measurement_active = False
                 if multimeter_task:
@@ -1090,7 +1099,6 @@ async def main():
                     except asyncio.CancelledError:
                         pass
                 
-                # Закрытие соединений
                 if global_visualizer and global_visualizer.oscilloscope:
                     try:
                         global_visualizer.oscilloscope.close()
@@ -1102,8 +1110,6 @@ async def main():
                         global_multimeter.disconnect()
                     except Exception as e:
                         print(f"Ошибка при закрытии мультиметра: {e}")
-                
-                # HTTP сервер завершится автоматически при завершении процесса
                 
     except Exception as e:
         print(f"Критическая ошибка: {e}")

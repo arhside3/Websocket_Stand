@@ -1,6 +1,5 @@
 local os = require("os")
-
--- Функция для безопасного выполнения команды
+                    
 local function safe_execute(cmd)
     print("Выполнение команды:", cmd)
     local handle = io.popen(cmd .. " 2>&1")
@@ -24,7 +23,6 @@ end
 local function run_multimeter_test(params)
     print("Начало выполнения теста мультиметра")
     
-    -- Проверяем наличие Python и необходимых модулей
     print("Проверка Python и необходимых модулей...")
     local python_check, python_error = safe_execute("python3 -c 'import hid, serial, websockets' 2>&1")
     
@@ -34,7 +32,6 @@ local function run_multimeter_test(params)
         return false
     end
     
-    -- Проверяем, запущен ли WebSocket сервер
     print("Проверка WebSocket сервера...")
     local server_check, server_error = safe_execute("ps aux | grep 'python3 main.py' | grep -v grep > /dev/null 2>&1")
     
@@ -44,7 +41,6 @@ local function run_multimeter_test(params)
         return false
     end
     
-    -- Проверяем наличие скрипта ut803_linux.py
     print("Проверка наличия скрипта ut803_linux.py...")
     local file = io.open("ut803_linux.py", "r")
     if not file then
@@ -52,25 +48,21 @@ local function run_multimeter_test(params)
         return false
     end
     file:close()
-    
-    -- Запускаем мультиметр с правильным путем к Python
+
     local cmd = string.format("python3 ut803_linux.py --measurement_time %d", params.measurement_time)
     print("\nЗапуск теста мультиметра на " .. params.measurement_time .. " секунд...")
     print("Команда:", cmd)
     
-    -- Уменьшаем задержку перед запуском мультиметра
     print("Ожидание 1 секунды перед запуском...")
     os.execute("sleep 1")
     
-    -- Запускаем процесс и получаем его вывод
     local output, error = safe_execute(cmd)
     
     if error then
         print("Ошибка выполнения команды:", error)
         return false
     end
-    
-    -- Выводим результат
+
     print("Результат выполнения теста:")
     print(output)
     return true
@@ -78,30 +70,55 @@ end
 
 io.stdout:setvbuf('no')
 
-local function run_test_scenario()
-    print("\n=== START TEST SCENARIO ===")
+local function run_parallel_tests()
+    print("\n=== START PARALLEL TEST SCENARIO ===")
 
-    local cmd = "python test_rigol.py --samples 10 --interval 1.0 --force-save"
-    print("\nSTART TEST OF OSCILLOSCOPE...")
-    print(cmd)
-    os.execute(cmd)
-    
-    local cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", 10)
-    print("\nSTART TEST OF MULTIMETER...")
-    print(cmd)
-    local handle = io.popen(cmd)
-    if handle then
-        for line in handle:lines() do
-            print(line)
+    local osc_samples = 20
+    local osc_interval = 0.2
+    local mult_time = 10
+
+    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", osc_samples, osc_interval)
+    local osc_handle = io.popen(osc_cmd)
+
+    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", mult_time)
+    local mult_handle = io.popen(mult_cmd)
+
+    local osc_count = 0
+    local mult_count = 0
+    local osc_total = osc_samples
+    local mult_total = mult_time
+    local last_progress = 0
+
+    while true do
+        local osc_line = osc_handle:read("*l")
+        local mult_line = mult_handle:read("*l")
+        if osc_line then
+            print("[OSC] " .. osc_line)
+            if osc_line:find("Получение выборки") then
+                osc_count = osc_count + 1
+            end
         end
-        handle:close()
+        if mult_line then
+            print("[MULT] " .. mult_line)
+            if mult_line:find("Измерение") or mult_line:find("Measurement") then
+                mult_count = mult_count + 1
+            end
+        end
+        local progress = math.floor((math.max(osc_count / osc_total, mult_count / mult_total)) * 100)
+        if progress > last_progress and progress <= 100 then
+            print(string.format("[PROGRESS] %d%%", progress))
+            last_progress = progress
+        end
+        if not osc_line and not mult_line then break end
     end
-    print("\nSTART TEST SCENARIO FINISHED")
+
+    osc_handle:close()
+    mult_handle:close()
+    print("\n=== PARALLEL TEST SCENARIO FINISHED ===")
 end
 
--- Запускаем сценарий с обработкой ошибок
 print("Запуск тестового сценария...")
-local status, err = pcall(run_test_scenario)
+local status, err = pcall(run_parallel_tests)
 if not status then
     print("Ошибка выполнения сценария:", err)
     os.exit(1)
