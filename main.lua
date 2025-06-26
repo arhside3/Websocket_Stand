@@ -73,20 +73,18 @@ io.stdout:setvbuf('no')
 local function run_parallel_tests()
     print("\n=== START PARALLEL TEST SCENARIO ===")
 
-    local osc_samples = 20
-    local osc_interval = 0.2
-    local mult_time = 10
+    require "scenario"
 
-    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", osc_samples, osc_interval)
+    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval)
     local osc_handle = io.popen(osc_cmd)
 
-    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", mult_time)
+    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", global_mult_time )
     local mult_handle = io.popen(mult_cmd)
 
     local osc_count = 0
     local mult_count = 0
-    local osc_total = osc_samples
-    local mult_total = mult_time
+    local osc_total = global_osc_samples
+    local mult_total = global_mult_time
     local last_progress = 0
 
     while true do
@@ -126,3 +124,7 @@ end
 
 print("Сценарий успешно завершен")
 os.exit(0)
+
+return {
+    firt = safe_execute(),
+}
