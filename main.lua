@@ -75,16 +75,16 @@ local function run_parallel_tests()
 
     require "scenario"
 
-    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval)
+    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval_sec)
     local osc_handle = io.popen(osc_cmd)
 
-    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", global_mult_time )
+    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d", global_mult_time_sec)
     local mult_handle = io.popen(mult_cmd)
 
     local osc_count = 0
     local mult_count = 0
     local osc_total = global_osc_samples
-    local mult_total = global_mult_time
+    local mult_total = global_mult_time_sec
     local last_progress = 0
 
     while true do

@@ -208,49 +208,9 @@ function initWebSocket() {
 }
 
 function updateOscilloscopeData(data) {
-    console.log('updateOscilloscopeData called', data);
-    if (!oscilloscopeChart || !measurementsActive) return;
-    
-    const oscilloscopeData = data.type === 'oscilloscope_data' ? data.data : data;
-    
-    oscilloscopeChart.data.datasets = [];
-    
-    if (oscilloscopeData.channels) {
-        for (const [channelName, channelData] of Object.entries(oscilloscopeData.channels)) {
-            if (channelData.voltage && channelData.voltage.length > 0) {
-                const channelNumber = parseInt(channelName.slice(2)) - 1;
-                const color = channelData.color || CHANNEL_COLORS[channelNumber];
-                
-                oscilloscopeChart.data.datasets.push({
-                    label: channelName,
-                    data: channelData.time.map((t, i) => ({ x: t, y: channelData.voltage[i] })),
-                    borderColor: color,
-                    backgroundColor: 'transparent',
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    tension: 0.1
-                });
-                
-                if (channelData.settings) {
-                    updateChannelInfo(channelName, channelData.settings);
-                }
-            }
-        }
-    }
-    
-    if (oscilloscopeData.time_base) {
-        const timeScale = oscilloscopeData.time_base * 6;
-        oscilloscopeChart.options.scales.x.min = -timeScale;
-        oscilloscopeChart.options.scales.x.max = timeScale;
-    }
-    
-    if (oscilloscopeData.trigger_level !== undefined) {
-        updateTriggerLevel(oscilloscopeData.trigger_level);
-    }
-    
-    oscilloscopeChart.update('none');
-
-    renderChannelInfoBlock('channelInfo', oscilloscopeData.channels);
+    if (!measurementsActive) return;
+    renderOscilloscopeSVG(data.channels);
+    renderChannelInfoBlock('channelInfo', data.channels);
 }
 
 function updateChannelInfo(channelName, settings) {
@@ -299,7 +259,6 @@ function parseMultimeterRawData(rawDataStr, defaultValue) {
 }
 
 function updateMultimeterData(data) {
-    console.log('updateMultimeterData called', data);
     if (!measurementsActive) return;
     try {
         document.getElementById('multimeterValue').innerHTML = 
@@ -307,49 +266,18 @@ function updateMultimeterData(data) {
         document.getElementById('multimeterMode').textContent = data.mode || '';
         document.getElementById('multimeterRange').textContent = data.range_str || 'AUTO';
         document.getElementById('multimeterType').textContent = data.measure_type || '';
-        
         let value = parseFloat(data.value);
         if (isNaN(value) || data.value === 'OL') {
-            console.warn('Некорректное значение мультиметра:', data.value);
             return;
         }
-        
         const timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
-        
         multimeterData.timestamps.push(timestamp);
         multimeterData.values.push(value);
-        
         while (multimeterData.timestamps.length > MAX_MULTIMETER_POINTS) {
             multimeterData.timestamps.shift();
             multimeterData.values.shift();
         }
-        
-        if (multimeterChart) {
-            multimeterChart.data.labels = multimeterData.timestamps;
-            multimeterChart.data.datasets[0].data = multimeterData.values.map((v, i) => ({
-                x: multimeterData.timestamps[i],
-                y: v
-            }));
-            
-            const minValue = Math.min(...multimeterData.values);
-            const maxValue = Math.max(...multimeterData.values);
-            const padding = Math.max((maxValue - minValue) * 0.1, 0.1);
-            
-            multimeterChart.options.scales.y.min = Math.max(0, minValue - padding);
-            multimeterChart.options.scales.y.max = maxValue + padding;
-            
-            multimeterChart.options.plugins.title = {
-                display: true,
-                text: `Измерения мультиметра (${data.mode} ${data.measure_type})`,
-                color: '#fff',
-                font: {
-                    size: 14,
-                    weight: 'bold'
-                }
-            };
-            
-            multimeterChart.update();
-        }
+        renderMultimeterSVG(multimeterData);
     } catch (error) {
         console.error('Ошибка обновления данных мультиметра:', error);
     }
@@ -1214,8 +1142,8 @@ function updateMultimeterTestData(data) {
     const modeElem = document.getElementById('multimeterModeTest');
     const rangeElem = document.getElementById('multimeterRangeTest');
     const typeElem = document.getElementById('multimeterTypeTest');
-    const chartElem = document.getElementById('multimeterChartTest');
-
+    // SVG-график для испытаний
+    renderMultimeterSVGTest(multimeterTestData);
     if (valueElem && unitElem) {
         valueElem.innerText = data.value + ' ';
         unitElem.innerText = data.unit;
@@ -1226,26 +1154,123 @@ function updateMultimeterTestData(data) {
     if (modeElem && data.mode) modeElem.innerText = data.mode;
     if (rangeElem && data.range_str) rangeElem.innerText = data.range_str;
     if (typeElem && data.measure_type) typeElem.innerText = data.measure_type;
-    if (!chartElem) return;
-    if (window.multimeterChartTest) {
-        const chart = window.multimeterChartTest;
-        chart.data.labels = multimeterTestData.timestamps;
-        chart.data.datasets[0].data = multimeterTestData.values.map((v, i) => ({ x: multimeterTestData.timestamps[i], y: v }));
-        if (multimeterTestData.values.length > 0) {
-            const minValue = Math.min(...multimeterTestData.values);
-            const maxValue = Math.max(...multimeterTestData.values);
-            const padding = Math.max((maxValue - minValue) * 0.1, 0.1);
-            chart.options.scales.y.min = Math.max(0, minValue - padding);
-            chart.options.scales.y.max = maxValue + padding;
+}
+
+function updateOscilloscopeChartTestLive() {
+    // SVG-график для испытаний
+    renderOscilloscopeSVGTest(oscilloscopeTestLiveData);
+    const channelsBlock = {};
+    ['CH1', 'CH2', 'CH3', 'CH4'].forEach((ch, i) => {
+        const chData = oscilloscopeTestLiveData[ch];
+        if (chData && chData.settings) {
+            channelsBlock[ch] = {
+                settings: chData.settings,
+                color: chData.color || CHANNEL_COLORS[i]
+            };
         }
-        chart.options.plugins.title = {
-            display: true,
-            text: `Измерения мультиметра (${data.mode} ${data.measure_type})`,
-            color: '#fff',
-            font: { size: 14, weight: 'bold' }
-        };
-        chart.update();
+    });
+    renderChannelInfoBlock('channelInfoTest', channelsBlock);
+}
+
+// SVG для испытаний (осциллограф)
+function renderOscilloscopeSVGTest(channelsData) {
+    const width = 2700, height = 800, padding = 60, gridCountY = 6, gridCountX = 10;
+    let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#000;display:block;">`;
+    // 1. Найти общий min/max по времени и напряжению
+    let allTimes = [], allVoltages = [];
+    Object.values(channelsData).forEach(ch => {
+        if (ch.time && ch.voltage) {
+            allTimes = allTimes.concat(ch.time);
+            allVoltages = allVoltages.concat(ch.voltage);
+        }
+    });
+    if (allTimes.length === 0 || allVoltages.length === 0) {
+        svg += '</svg>';
+        const el = document.getElementById('oscilloscopeChartTest');
+        if (el) el.innerHTML = svg;
+        return;
     }
+    let minT = Math.min(...allTimes), maxT = Math.max(...allTimes);
+    let minV = Math.min(...allVoltages), maxV = Math.max(...allVoltages);
+    let padV = (maxV - minV) * 0.1 || 1;
+    minV -= padV; maxV += padV;
+    // 2. Сетка и подписи
+    for (let i = 0; i <= gridCountY; i++) {
+        let y = padding + ((height - 2 * padding) * i) / gridCountY;
+        let v = (maxV - minV) * (1 - i / gridCountY) + minV;
+        svg += `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#222"/>`;
+        svg += `<text x="${padding - 8}" y="${y + 4}" fill="#888" font-size="14" text-anchor="end">${v.toFixed(2)}</text>`;
+    }
+    for (let i = 0; i <= gridCountX; i++) {
+        let x = padding + ((width - 2 * padding) * i) / gridCountX;
+        let t = (maxT - minT) * (i / gridCountX) + minT;
+        svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
+        svg += `<text x="${x}" y="${height - padding + 22}" fill="#888" font-size="14" text-anchor="middle">${t.toFixed(2)}</text>`;
+    }
+    // 3. Графики каналов
+    Object.entries(channelsData).forEach(([ch, chData], idx) => {
+        if (!chData.voltage || !chData.time || chData.voltage.length === 0) return;
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        let points = chData.time.map((t, i) => {
+            let x = padding + ((t - minT) / ((maxT - minT) || 1)) * (width - 2 * padding);
+            let y = padding + (height - 2 * padding) * (1 - (chData.voltage[i] - minV) / ((maxV - minV) || 1));
+            return `${x},${y}`;
+        }).join(' ');
+        svg += `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points}"/>`;
+    });
+    // 4. Легенда
+    let legendX = width - padding - 120, legendY = padding;
+    Object.entries(channelsData).forEach(([ch, chData], idx) => {
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        svg += `<rect x="${legendX}" y="${legendY + idx * 26}" width="22" height="10" fill="${color}" />`;
+        svg += `<text x="${legendX + 30}" y="${legendY + idx * 26 + 10}" fill="#fff" font-size="16">${ch}</text>`;
+    });
+    svg += `</svg>`;
+    const el = document.getElementById('oscilloscopeChartTest');
+    if (el) el.innerHTML = svg;
+}
+
+// SVG для испытаний (мультиметр)
+function renderMultimeterSVGTest(data) {
+    const width = 1500, height = 400, padding = 50, gridCountY = 4, gridCountX = 6;
+    let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#111;display:block;">`;
+    if (!data.timestamps || !data.values || data.values.length === 0) {
+        svg += '</svg>';
+        const el = document.getElementById('multimeterChartTest');
+        if (el) el.innerHTML = svg;
+        return;
+    }
+    const minT = Math.min(...data.timestamps.map(t => new Date(t).getTime()));
+    const maxT = Math.max(...data.timestamps.map(t => new Date(t).getTime()));
+    const minV = Math.min(...data.values);
+    const maxV = Math.max(...data.values);
+    let padV = (maxV - minV) * 0.1 || 1;
+    let minV2 = minV - padV, maxV2 = maxV + padV;
+    // Сетка и подписи
+    for (let i = 0; i <= gridCountY; i++) {
+        let y = padding + ((height - 2 * padding) * i) / gridCountY;
+        let v = (maxV2 - minV2) * (1 - i / gridCountY) + minV2;
+        svg += `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#222"/>`;
+        svg += `<text x="${padding - 8}" y="${y + 4}" fill="#888" font-size="13" text-anchor="end">${v.toFixed(2)}</text>`;
+    }
+    for (let i = 0; i <= gridCountX; i++) {
+        let x = padding + ((width - 2 * padding) * i) / gridCountX;
+        let t = (maxT - minT) * (i / gridCountX) + minT;
+        let date = new Date(t);
+        let label = date.toLocaleTimeString().slice(0,8);
+        svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
+        svg += `<text x="${x}" y="${height - padding + 20}" fill="#888" font-size="13" text-anchor="middle">${label}</text>`;
+    }
+    // График
+    let points = data.timestamps.map((t, i) => {
+        let x = padding + ((new Date(t).getTime() - minT) / ((maxT - minT) || 1)) * (width-2*padding);
+        let y = padding + (height - 2 * padding) * (1 - (data.values[i] - minV2) / ((maxV2 - minV2) || 1));
+        return `${x},${y}`;
+    }).join(' ');
+    svg += `<polyline fill="none" stroke="#00ffcc" stroke-width="2" points="${points}"/>`;
+    svg += `</svg>`;
+    const el = document.getElementById('multimeterChartTest');
+    if (el) el.innerHTML = svg;
 }
 
 function parseAndAddOscilloscopeTestData(line) {
@@ -1280,36 +1305,6 @@ function parseAndAddOscilloscopeTestData(line) {
             }
         }
     }
-}
-
-function updateOscilloscopeChartTestLive() {
-    if (!window.oscilloscopeChartTest) return;
-    const chart = window.oscilloscopeChartTest;
-    chart.data.datasets = [];
-    const channelsBlock = {};
-    ['CH1', 'CH2', 'CH3', 'CH4'].forEach((ch, i) => {
-        const chData = oscilloscopeTestLiveData[ch];
-        const isActive = chData && chData.settings && chData.settings.display === '1';
-        if (chData && chData.time && chData.voltage && chData.time.length > 0 && isActive) {
-            chart.data.datasets.push({
-                label: ch,
-                data: chData.time.map((t, idx) => ({ x: t, y: chData.voltage[idx] })),
-                borderColor: chData.color || CHANNEL_COLORS[i],
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                pointRadius: 0,
-                tension: 0.1
-            });
-        }
-        if (chData && chData.settings) {
-            channelsBlock[ch] = {
-                settings: chData.settings,
-                color: chData.color || CHANNEL_COLORS[i]
-            };
-        }
-    });
-    renderChannelInfoBlock('channelInfoTest', channelsBlock);
-    chart.update();
 }
 
 function runLuaScript() {
@@ -1380,4 +1375,103 @@ function renderChannelInfoBlock(containerId, channelsData) {
             container.appendChild(card);
         }
     });
+}
+
+// === SVG ГРАФИКИ ===
+function renderOscilloscopeSVG(channelsData) {
+    const width = 2700, height = 1000, padding = 60, gridCountY = 6, gridCountX = 10;
+    let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#000;display:block;">`;
+    // 1. Найти общий min/max по времени и напряжению
+    let allTimes = [], allVoltages = [];
+    Object.values(channelsData).forEach(ch => {
+        if (ch.time && ch.voltage) {
+            allTimes = allTimes.concat(ch.time);
+            allVoltages = allVoltages.concat(ch.voltage);
+        }
+    });
+    if (allTimes.length === 0 || allVoltages.length === 0) {
+        svg += '</svg>';
+        document.getElementById('oscilloscopeSVG').innerHTML = svg;
+        return;
+    }
+    let minT = Math.min(...allTimes), maxT = Math.max(...allTimes);
+    let minV = Math.min(...allVoltages), maxV = Math.max(...allVoltages);
+    // Добавим небольшой отступ
+    let padV = (maxV - minV) * 0.1 || 1;
+    minV -= padV; maxV += padV;
+    // 2. Сетка и подписи
+    for (let i = 0; i <= gridCountY; i++) {
+        let y = padding + ((height - 2 * padding) * i) / gridCountY;
+        let v = (maxV - minV) * (1 - i / gridCountY) + minV;
+        svg += `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#222"/>`;
+        svg += `<text x="${padding - 8}" y="${y + 4}" fill="#888" font-size="14" text-anchor="end">${v.toFixed(2)}</text>`;
+    }
+    for (let i = 0; i <= gridCountX; i++) {
+        let x = padding + ((width - 2 * padding) * i) / gridCountX;
+        let t = (maxT - minT) * (i / gridCountX) + minT;
+        svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
+        svg += `<text x="${x}" y="${height - padding + 22}" fill="#888" font-size="14" text-anchor="middle">${t.toFixed(2)}</text>`;
+    }
+    // 3. Графики каналов
+    Object.entries(channelsData).forEach(([ch, chData], idx) => {
+        if (!chData.voltage || !chData.time || chData.voltage.length === 0) return;
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        let points = chData.time.map((t, i) => {
+            let x = padding + ((t - minT) / ((maxT - minT) || 1)) * (width - 2 * padding);
+            let y = padding + (height - 2 * padding) * (1 - (chData.voltage[i] - minV) / ((maxV - minV) || 1));
+            return `${x},${y}`;
+        }).join(' ');
+        svg += `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points}"/>`;
+    });
+    // 4. Легенда
+    let legendX = width - padding - 120, legendY = padding;
+    Object.entries(channelsData).forEach(([ch, chData], idx) => {
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        svg += `<rect x="${legendX}" y="${legendY + idx * 26}" width="22" height="10" fill="${color}" />`;
+        svg += `<text x="${legendX + 30}" y="${legendY + idx * 26 + 10}" fill="#fff" font-size="16">${ch}</text>`;
+    });
+    svg += `</svg>`;
+    document.getElementById('oscilloscopeSVG').innerHTML = svg;
+}
+
+function renderMultimeterSVG(data) {
+    const width = 1500, height = 400, padding = 50, gridCountY = 4, gridCountX = 6;
+    let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#111;display:block;">`;
+    if (!data.timestamps || !data.values || data.values.length === 0) {
+        svg += '</svg>';
+        const el = document.getElementById('multimeterSVG');
+        if (el) el.innerHTML = svg;
+        return;
+    }
+    const minT = Math.min(...data.timestamps.map(t => new Date(t).getTime()));
+    const maxT = Math.max(...data.timestamps.map(t => new Date(t).getTime()));
+    const minV = Math.min(...data.values);
+    const maxV = Math.max(...data.values);
+    let padV = (maxV - minV) * 0.1 || 1;
+    let minV2 = minV - padV, maxV2 = maxV + padV;
+    // Сетка и подписи
+    for (let i = 0; i <= gridCountY; i++) {
+        let y = padding + ((height - 2 * padding) * i) / gridCountY;
+        let v = (maxV2 - minV2) * (1 - i / gridCountY) + minV2;
+        svg += `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="#222"/>`;
+        svg += `<text x="${padding - 8}" y="${y + 4}" fill="#888" font-size="13" text-anchor="end">${v.toFixed(2)}</text>`;
+    }
+    for (let i = 0; i <= gridCountX; i++) {
+        let x = padding + ((width - 2 * padding) * i) / gridCountX;
+        let t = (maxT - minT) * (i / gridCountX) + minT;
+        let date = new Date(t);
+        let label = date.toLocaleTimeString().slice(0,8);
+        svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
+        svg += `<text x="${x}" y="${height - padding + 20}" fill="#888" font-size="13" text-anchor="middle">${label}</text>`;
+    }
+    // График
+    let points = data.timestamps.map((t, i) => {
+        let x = padding + ((new Date(t).getTime() - minT) / ((maxT - minT) || 1)) * (width-2*padding);
+        let y = padding + (height - 2 * padding) * (1 - (data.values[i] - minV2) / ((maxV2 - minV2) || 1));
+        return `${x},${y}`;
+    }).join(' ');
+    svg += `<polyline fill="none" stroke="#00ffcc" stroke-width="2" points="${points}"/>`;
+    svg += `</svg>`;
+    const el = document.getElementById('multimeterSVG');
+    if (el) el.innerHTML = svg;
 }
