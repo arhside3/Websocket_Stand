@@ -1,4 +1,4 @@
-const WEBSOCKET_URL = 'ws://127.0.0.1:8767';
+// const WEBSOCKET_URL = 'ws://127.0.0.1:8767'; //const WEBSOCKET_URL = 'ws://10.34.10.76:8767/'; для сервера если нужно
 const MAX_MULTIMETER_POINTS = 100;
 const CHANNEL_COLORS = ['yellow', 'cyan', 'magenta', '#00aaff'];
 const UPDATE_INTERVAL = 1000; 
