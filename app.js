@@ -64,6 +64,28 @@ let oscilloscopeTestLiveData = {
     index: 0
 };
 
+let currentMultimeterMode = 'DC';
+
+let currentTestNumber = null;
+let testsList = [];
+let selectedTestNumber = null;
+
+let dbSelectedTest = '';
+
+async function updateDbTestSelect() {
+    const select = document.getElementById('dbTestSelect');
+    if (!select) return;
+    let resp = await fetch('/tests');
+    let tests = [];
+    if (resp.ok) tests = await resp.json();
+    let html = '<option value="">Рабочие таблицы</option>';
+    tests.forEach(test => {
+        html += `<option value="${test.number}">Испытание #${test.number}</option>`;
+    });
+    select.innerHTML = html;
+    select.value = dbSelectedTest;
+}
+
 function requestOscilloscopeData() {
     if (websocket && websocket.readyState === WebSocket.OPEN) {
         websocket.send(JSON.stringify({
@@ -179,6 +201,10 @@ function initWebSocket() {
                 setTimeout(() => { luaTestActive = false; }, 1000);
                 addToLuaConsoleTest(data.success ? '<span style="color:lime">Сценарий завершён успешно</span>' : '<span style="color:red">Ошибка выполнения сценария</span>');
                 updateTestProgress(100);
+            } else if (data.type === 'test_started') {
+                currentTestNumber = data.test_number;
+                addToLuaConsoleTest(`<span style="color:cyan">Начато испытание #${data.test_number}</span>`);
+                loadTestsList();
             } else if (data.output) {
                 const multimeterRegex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В (DC|AC) AUTO \[Вольтметр\]/;
                 const match = data.output.match(multimeterRegex);
@@ -210,7 +236,14 @@ function initWebSocket() {
 function updateOscilloscopeData(data) {
     if (!measurementsActive) return;
     renderOscilloscopeSVG(data.channels);
-    renderChannelInfoBlock('channelInfo', data.channels);
+    const trigger = data.trigger || { level: 1.23, mode: 'Auto', source: 'CH1', slope: 'Rising' };
+    renderChannelInfoSVG(data.channels, trigger);
+    renderOscilloscopeChannelControls(data.channels);
+    if (data.trigger) {
+        updateTriggerInfo(data.trigger);
+    } else {
+        updateTriggerInfo({ level: 1.23, mode: 'Auto', source: 'CH1', slope: 'Rising' });
+    }
 }
 
 function updateChannelInfo(channelName, settings) {
@@ -277,235 +310,24 @@ function updateMultimeterData(data) {
             multimeterData.timestamps.shift();
             multimeterData.values.shift();
         }
+        currentMultimeterMode = data.mode || 'DC';
         renderMultimeterSVG(multimeterData);
+        if (multimeterChart && multimeterChart.data && multimeterChart.data.datasets && multimeterChart.data.datasets[0]) {
+            multimeterChart.data.datasets[0].label = `Напряжение, В (${currentMultimeterMode})`;
+            multimeterChart.update();
+        }
     } catch (error) {
         console.error('Ошибка обновления данных мультиметра:', error);
     }
 }
 
 function initCharts() {
+    console.log('Инициализация графиков...');
+    
     const oscilloCtxElement = document.getElementById('oscilloscopeChart');
-    const multiCtxElement = document.getElementById('multimeterChart');
-    const oscilloHistoryCtxElement = document.getElementById('oscilloHistoryChart');
-    const multiHistoryCtxElement = document.getElementById('multimeterHistoryChart');
-    
-    if (!oscilloCtxElement || !multiCtxElement || !oscilloHistoryCtxElement || !multiHistoryCtxElement) {
-        console.error('Ошибка: Не найдены один или несколько элементов canvas для графиков');
-        return;
-    }
-
-    const oscilloCtx = oscilloCtxElement.getContext('2d');
-    oscilloscopeChart = new Chart(oscilloCtx, {
-        type: 'line',
-        data: {
-            datasets: []
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: {
-                mode: 'nearest',
-                axis: 'x',
-                intersect: false
-            },
-            scales: {
-                x: {
-                    type: 'linear',
-                    position: 'bottom',
-                    title: {
-                        display: true,
-                        text: 'Time (s)',
-                        color: '#fff'
-                    },
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#fff'
-                    }
-                },
-                y: {
-                    title: {
-                        display: true,
-                        text: 'Voltage (V)',
-                        color: '#fff'
-                    },
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#fff'
-                    }
-                }
-            },
-            plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        color: '#fff',
-                        font: {
-                            size: 12
-                        }
-                    }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(0,0,0,0.7)',
-                    bodyFont: {
-                        size: 13
-                    },
-                    titleFont: {
-                        size: 14,
-                        weight: 'bold'
-                    },
-                    callbacks: {
-                        label: function(context) {
-                            return `${context.dataset.label}: ${context.parsed.y.toFixed(3)}V @ ${context.parsed.x.toFixed(3)}s`;
-                        }
-                    }
-                }
-            }
-        }
-    });
-    
-    const multiCtx = multiCtxElement.getContext('2d');
-    
-    multiCtx.canvas.style.width = '100%';
-    multiCtx.canvas.style.height = '300px';
-    multiCtx.imageSmoothingEnabled = false;
-    
-    multimeterChart = initMultimeterChart(multiCtx);
-    
-    const oscilloHistoryCtx = oscilloHistoryCtxElement.getContext('2d');
-    oscilloHistoryChart = new Chart(oscilloHistoryCtx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: 'Напряжение (В)',
-                data: [],
-                borderColor: 'yellow',
-                backgroundColor: 'rgba(255, 255, 0, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                y: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                },
-                x: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                }
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#eee'
-                    }
-                }
-            }
-        }
-    });
-    
-    const multiHistoryCtx = multiHistoryCtxElement.getContext('2d');
-    multimeterHistoryChart = new Chart(multiHistoryCtx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [{
-                label: 'Показания',
-                data: [],
-                borderColor: '#00ffcc',
-                backgroundColor: 'rgba(0, 255, 204, 0.1)',
-                borderWidth: 2,
-                fill: true,
-                tension: 0.4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                y: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                },
-                x: {
-                    grid: {
-                        color: 'rgba(255, 255, 255, 0.1)'
-                    },
-                    ticks: {
-                        color: '#aaa'
-                    }
-                }
-            },
-            plugins: {
-                legend: {
-                    labels: {
-                        color: '#eee'
-                    }
-                }
-            }
-        }
-    });
-    
-    for (let i = 1; i <= 4; i++) {
-        const toggleElement = document.getElementById(`ch${i}Toggle`);
-        if (toggleElement) {
-            toggleElement.addEventListener('change', function() {
-                if (oscilloscopeChart && oscilloscopeChart.data.datasets[i-1]) {
-                    oscilloscopeChart.data.datasets[i-1].hidden = !this.checked;
-                    oscilloscopeChart.update();
-                }
-            });
-        }
-    }
-
-    const oscilloHistoryPeriodElement = document.getElementById('oscilloHistoryPeriod');
-    if (oscilloHistoryPeriodElement) {
-        oscilloHistoryPeriodElement.addEventListener('change', loadOscilloscopeHistory);
-    }
-    
-    const multimeterHistoryPeriodElement = document.getElementById('multimeterHistoryPeriod');
-    if (multimeterHistoryPeriodElement) {
-        multimeterHistoryPeriodElement.addEventListener('change', loadMultimeterHistory);
-    }
-
-    multimeterData = {
-        timestamps: [],
-        values: []
-    };
-
-    const multiTestCtxElement = document.getElementById('multimeterChartTest');
-    if (multiTestCtxElement) {
-        const multiTestCtx = multiTestCtxElement.getContext('2d');
-        window.multimeterChartTest = initMultimeterChart(multiTestCtx);
-    }
-
-    const oscilloTestCtxElement = document.getElementById('oscilloscopeChartTest');
-    if (oscilloTestCtxElement) {
-        console.log('Initializing oscilloscopeChartTest...');
-        const oscilloTestCtx = oscilloTestCtxElement.getContext('2d');
-        window.oscilloscopeChartTest = new Chart(oscilloTestCtx, {
+    if (oscilloCtxElement) {
+        const oscilloCtx = oscilloCtxElement.getContext('2d');
+        oscilloscopeChart = new Chart(oscilloCtx, {
             type: 'line',
             data: {
                 datasets: []
@@ -518,6 +340,36 @@ function initCharts() {
                     mode: 'nearest',
                     axis: 'x',
                     intersect: false
+                },
+                scales: {
+                    x: {
+                        type: 'linear',
+                        position: 'bottom',
+                        title: {
+                            display: true,
+                            text: 'Time (s)',
+                            color: '#fff'
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#fff'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: 'Voltage (V)',
+                            color: '#fff'
+                        },
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#fff'
+                        }
+                    }
                 },
                 plugins: {
                     legend: {
@@ -544,79 +396,190 @@ function initCharts() {
                             }
                         }
                     }
-                },
+                }
+            }
+        });
+    } else {
+        console.warn('Элемент oscilloscopeChart не найден');
+    }
+    
+    const multiCtxElement = document.getElementById('multimeterChart');
+    if (multiCtxElement) {
+        const multiCtx = multiCtxElement.getContext('2d');
+        multiCtx.canvas.style.width = '100%';
+        multiCtx.canvas.style.height = '300px';
+        multiCtx.imageSmoothingEnabled = false;
+        multimeterChart = initMultimeterChart(multiCtx);
+    } else {
+        console.warn('Элемент multimeterChart не найден');
+    }
+    
+    const oscilloHistoryCtxElement = document.getElementById('oscilloHistoryChart');
+    if (oscilloHistoryCtxElement) {
+        const oscilloHistoryCtx = oscilloHistoryCtxElement.getContext('2d');
+        oscilloHistoryChart = new Chart(oscilloHistoryCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Напряжение (В)',
+                    data: [],
+                    borderColor: 'yellow',
+                    backgroundColor: 'rgba(255, 255, 0, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
                 scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Время (с)',
-                            color: '#fff',
-                            font: {
-                                size: 14,
-                                weight: 'bold'
-                            }
-                        },
+                    y: {
                         grid: {
                             color: 'rgba(255, 255, 255, 0.1)'
                         },
                         ticks: {
-                            color: '#fff',
-                            font: {
-                                size: 12
-                            }
+                            color: '#aaa'
                         }
                     },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Напряжение (В)',
-                            color: '#fff',
-                            font: {
-                                size: 14,
-                                weight: 'bold'
-                            }
-                        },
+                    x: {
                         grid: {
                             color: 'rgba(255, 255, 255, 0.1)'
                         },
                         ticks: {
-                            color: '#fff',
-                            font: {
-                                size: 12
-                            }
+                            color: '#aaa'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#eee'
                         }
                     }
                 }
             }
         });
-        console.log('oscilloscopeChartTest initialized successfully');
+        
+        const oscilloHistoryPeriodElement = document.getElementById('oscilloHistoryPeriod');
+        if (oscilloHistoryPeriodElement) {
+            oscilloHistoryPeriodElement.addEventListener('change', loadOscilloscopeHistory);
+        }
     } else {
-        console.error('oscilloscopeChartTest canvas element not found!');
+        console.warn('Элемент oscilloHistoryChart не найден');
     }
-
-    addClearTestChartButton();
+    
+    const multiHistoryCtxElement = document.getElementById('multimeterHistoryChart');
+    if (multiHistoryCtxElement) {
+        const multiHistoryCtx = multiHistoryCtxElement.getContext('2d');
+        multimeterHistoryChart = new Chart(multiHistoryCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Показания',
+                    data: [],
+                    borderColor: '#00ffcc',
+                    backgroundColor: 'rgba(0, 255, 204, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#aaa'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            color: 'rgba(255, 255, 255, 0.1)'
+                        },
+                        ticks: {
+                            color: '#aaa'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        labels: {
+                            color: '#eee'
+                        }
+                    }
+                }
+            }
+        });
+        
+        const multiHistoryPeriodElement = document.getElementById('multimeterHistoryPeriod');
+        if (multiHistoryPeriodElement) {
+            multiHistoryPeriodElement.addEventListener('change', loadMultimeterHistory);
+        }
+    } else {
+        console.warn('Элемент multimeterHistoryChart не найден');
+    }
+    
+    for (let i = 1; i <= 4; i++) {
+        const toggleElement = document.getElementById(`ch${i}Toggle`);
+        if (toggleElement) {
+            toggleElement.addEventListener('change', function() {
+                if (oscilloscopeChart && oscilloscopeChart.data.datasets[i-1]) {
+                    oscilloscopeChart.data.datasets[i-1].hidden = !this.checked;
+                    oscilloscopeChart.update();
+                }
+            });
+        }
+    }
+    
+    const databaseTab = document.getElementById('database-tab');
+    if (databaseTab) {
+        databaseTab.addEventListener('click', () => {
+            currentPage = 1;
+            loadDatabaseData();
+        });
+    }
+    
+    const historyTab = document.getElementById('history-tab');
+    if (historyTab) {
+        historyTab.addEventListener('click', () => {
+            if (oscilloHistoryChart) {
+                loadOscilloscopeHistory();
+            }
+            if (multimeterHistoryChart) {
+                loadMultimeterHistory();
+            }
+        });
+    }
+    
+    console.log('Инициализация графиков завершена');
 }
 
 function loadOscilloscopeHistory() {
-    const period = document.getElementById('oscilloHistoryPeriod').value;
+    if (!oscilloHistoryChart) {
+        console.warn('График истории осциллографа не инициализирован');
+        return;
+    }
+    
+    const period = document.getElementById('oscilloHistoryPeriod')?.value || 'hour';
     
     fetch(`/history/oscilloscope?period=${period}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Ошибка HTTP: ' + response.status);
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            if (!data.timestamps || data.timestamps.length === 0) {
+            if (data.timestamps && data.timestamps.length > 0) {
+                oscilloHistoryChart.data.labels = data.timestamps;
+                oscilloHistoryChart.data.datasets[0].data = data.voltages || [];
+                oscilloHistoryChart.update();
+            } else {
+                console.log('Нет данных истории осциллографа, генерируем тестовые данные');
                 generateTestOscilloscopeHistory();
-                return;
             }
-            
-            oscilloHistoryChart.data.labels = data.timestamps;
-            oscilloHistoryChart.data.datasets[0].data = data.voltages;
-            oscilloHistoryChart.update();
         })
         .catch(error => {
             console.error('Ошибка при загрузке истории осциллографа:', error);
@@ -625,83 +588,70 @@ function loadOscilloscopeHistory() {
 }
 
 function loadMultimeterHistory() {
-    const period = document.getElementById('multimeterHistoryPeriod').value;
+    if (!multimeterHistoryChart) {
+        console.warn('График истории мультиметра не инициализирован');
+        return;
+    }
+    
+    const period = document.getElementById('multimeterHistoryPeriod')?.value || 'hour';
     
     fetch(`/history/multimeter?period=${period}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Ошибка HTTP: ' + response.status);
-            }
-            return response.json();
-        })
+        .then(response => response.json())
         .then(data => {
-            if (!data.timestamps || data.timestamps.length === 0) {
-                console.log('Нет данных мультиметра в БД за указанный период');
-                multimeterHistoryChart.data.labels = [];
-                multimeterHistoryChart.data.datasets[0].data = [];
+            if (data.timestamps && data.timestamps.length > 0) {
+                multimeterHistoryChart.data.labels = data.timestamps;
+                multimeterHistoryChart.data.datasets[0].data = data.values || [];
                 multimeterHistoryChart.update();
-                return;
+            } else {
+                console.log('Нет данных истории мультиметра, генерируем тестовые данные');
+                generateTestMultimeterHistory();
             }
-            
-            multimeterHistoryChart.data.labels = data.timestamps;
-            multimeterHistoryChart.data.datasets[0].data = data.values;
-            multimeterHistoryChart.update();
         })
         .catch(error => {
             console.error('Ошибка при загрузке истории мультиметра:', error);
-            multimeterHistoryChart.data.labels = [];
-            multimeterHistoryChart.data.datasets[0].data = [];
-            multimeterHistoryChart.update();
+            generateTestMultimeterHistory();
         });
 }
 
 function generateTestOscilloscopeHistory() {
-    const period = document.getElementById('oscilloHistoryPeriod').value;
-    const points = period === 'hour' ? 60 : period === 'day' ? 24 : 7;
+    if (!oscilloHistoryChart) {
+        console.warn('График истории осциллографа не инициализирован');
+        return;
+    }
     
+    const now = new Date();
     const timestamps = [];
     const voltages = [];
     
-    for (let i = 0; i < points; i++) {
-        const date = new Date();
-        date.setMinutes(date.getMinutes() - (period === 'hour' ? i : 0));
-        date.setHours(date.getHours() - (period === 'day' ? i : 0));
-        date.setDate(date.getDate() - (period === 'week' ? i : 0));
-        
-        timestamps.push(period === 'hour' ? 
-            date.toTimeString().substr(0, 5) : 
-            date.toLocaleDateString() + ' ' + date.toTimeString().substr(0, 5));
-        
-        voltages.push(Math.random() * 5);
+    for (let i = 10; i >= 0; i--) {
+        const time = new Date(now.getTime() - i * 60000);
+        timestamps.push(time.toLocaleTimeString());
+        voltages.push(Math.random() * 5 + 2);
     }
     
-    oscilloHistoryChart.data.labels = timestamps.reverse();
-    oscilloHistoryChart.data.datasets[0].data = voltages.reverse();
+    oscilloHistoryChart.data.labels = timestamps;
+    oscilloHistoryChart.data.datasets[0].data = voltages;
     oscilloHistoryChart.update();
 }
 
 function generateTestMultimeterHistory() {
-    const period = document.getElementById('multimeterHistoryPeriod').value;
-    const points = period === 'hour' ? 60 : period === 'day' ? 24 : 7;
+    if (!multimeterHistoryChart) {
+        console.warn('График истории мультиметра не инициализирован');
+        return;
+    }
     
+    const now = new Date();
     const timestamps = [];
     const values = [];
     
-    for (let i = 0; i < points; i++) {
-        const date = new Date();
-        date.setMinutes(date.getMinutes() - (period === 'hour' ? i : 0));
-        date.setHours(date.getHours() - (period === 'day' ? i : 0));
-        date.setDate(date.getDate() - (period === 'week' ? i : 0));
-        
-        timestamps.push(period === 'hour' ? 
-            date.toTimeString().substr(0, 5) : 
-            date.toLocaleDateString() + ' ' + date.toTimeString().substr(0, 5));
-        
-        values.push(12 + Math.random() * 2);
+    for (let i = 10; i >= 0; i--) {
+        const time = new Date(now.getTime() - i * 60000);
+        timestamps.push(time.toLocaleTimeString());
+        values.push(Math.random() * 10 + 1);
     }
     
-    multimeterHistoryChart.data.labels = timestamps.reverse();
-    multimeterHistoryChart.data.datasets[0].data = values.reverse();
+    multimeterHistoryChart.data.labels = timestamps;
+    multimeterHistoryChart.data.datasets[0].data = values;
     multimeterHistoryChart.update();
 }
 
@@ -802,82 +752,53 @@ function addClearTestChartButton() {
 }
 
 function initApp() {
+    console.log('Инициализация приложения...');
+    
     initWebSocket();
+    
     initCharts();
     
-    loadOscilloscopeHistory();
-    loadMultimeterHistory();
+    const stopOscBtn = document.getElementById('stopOscilloscopeBtn');
+    const startOscBtn = document.getElementById('startOscilloscopeBtn');
     
-    document.getElementById('database-tab').addEventListener('click', () => {
-        currentPage = 1;
-        loadDatabaseData();
-    });
+    if (stopOscBtn) {
+        stopOscBtn.addEventListener('click', function() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ action: 'stop_oscilloscope' }));
+            }
+        });
+    }
     
-    document.getElementById('history-tab').addEventListener('click', () => {
-        loadOscilloscopeHistory();
-        loadMultimeterHistory();
-    });
-
-    const multimeterContainer = document.getElementById('multimeterCard');
-    if (multimeterContainer) {
-        if (!document.getElementById('refreshMultimeterBtn')) {
-            const refreshBtn = document.createElement('button');
-            refreshBtn.id = 'refreshMultimeterBtn';
-            refreshBtn.className = 'btn btn-sm btn-outline-info ml-2';
-            refreshBtn.innerHTML = '<i class="fas fa-sync"></i> Обновить';
-            refreshBtn.style.position = 'absolute';
-            refreshBtn.style.right = '10px';
-            refreshBtn.style.top = '10px';
-            
-            refreshBtn.addEventListener('click', function() {
-                console.log('Принудительное обновление данных мультиметра');
-                requestLatestMultimeterData();
-            });
-            
-            
-            refreshBtn.addEventListener('dblclick', function() {
-                console.log('Сброс графика мультиметра');
-                multimeterData = {
-                    timestamps: [],
-                    values: []
-                };
-                
-                if (multimeterChart) {
-                    multimeterChart.data.labels = [];
-                    multimeterChart.data.datasets[0].data = [];
-                    multimeterChart.update();
-                }
-                
-                requestLatestMultimeterData();
-            });
-            
-            multimeterContainer.style.position = 'relative';
-            multimeterContainer.appendChild(refreshBtn);
-        }
+    if (startOscBtn) {
+        startOscBtn.addEventListener('click', function() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ action: 'start_oscilloscope' }));
+            }
+        });
+    }
+    
+    const stopMultBtn = document.getElementById('stopMultimeterBtn');
+    const startMultBtn = document.getElementById('startMultimeterBtn');
+    
+    if (stopMultBtn) {
+        stopMultBtn.addEventListener('click', function() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ action: 'stop_multimeter' }));
+            }
+        });
+    }
+    
+    if (startMultBtn) {
+        startMultBtn.addEventListener('click', function() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ action: 'start_multimeter' }));
+            }
+        });
     }
     
     setTimeout(() => {
         requestLatestMultimeterData();
     }, 1000);
-
-    const stopBtn = document.getElementById('stopMeasurementsBtn');
-    if (stopBtn) {
-        stopBtn.addEventListener('click', function() {
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(JSON.stringify({ action: 'stop_measurements' }));
-            }
-        });
-    }
-    
-    const startBtn = document.getElementById('startMeasurementsBtn');
-    if (startBtn) {
-        startBtn.addEventListener('click', function() {
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(JSON.stringify({ action: 'start_measurements' }));
-            }
-            measurementsActive = true;
-        });
-    }
 
     const testsTab = document.getElementById('tests-tab');
     if (testsTab) {
@@ -896,6 +817,8 @@ function initApp() {
     if (runLuaBtnTest) {
         runLuaBtnTest.addEventListener('click', runLuaScript);
     }
+    
+    loadTestsList();
 }
 
 function requestLatestMultimeterData() {
@@ -916,7 +839,7 @@ function initMultimeterChart(ctx) {
         data: {
             labels: [],
             datasets: [{
-                label: 'Напряжение, В',
+                label: `Напряжение, В (${currentMultimeterMode})`,
                 data: [],
                 borderColor: '#00ffcc',
                 backgroundColor: 'rgba(0, 255, 204, 0.1)',
@@ -988,43 +911,6 @@ function initMultimeterChart(ctx) {
     return chart;
 }
 
-function updateChannelValues() {
-    const channelValuesContainer = document.getElementById('channelValues');
-    if (!channelValuesContainer) {
-        const container = document.createElement('div');
-        container.id = 'channelValues';
-        container.className = 'channel-values mt-3';
-        container.style.cssText = 'display: flex; justify-content: space-around; padding: 10px; background: #222; border-radius: 5px; margin: 10px;';
-        
-        const oscilloscopeElement = document.querySelector('.oscilloscope');
-        if (oscilloscopeElement) {
-            oscilloscopeElement.appendChild(container);
-        }
-    }
-    
-    const container = document.getElementById('channelValues');
-    if (!container) return;
-    
-    container.innerHTML = '';
-    
-    for (const [channelName, data] of Object.entries(lastChannelValues)) {
-        if (data.value !== null) {
-            const channelDiv = document.createElement('div');
-            channelDiv.className = 'channel-value';
-            const opacity = data.active ? '1' : '0.5';
-            channelDiv.style.cssText = `
-                color: ${CHANNEL_COLORS[parseInt(channelName.slice(2)) - 1]}; 
-                font-family: monospace; 
-                font-size: 1.2em; 
-                padding: 5px;
-                opacity: ${opacity};
-            `;
-            channelDiv.innerHTML = `${channelName}: ${data.value.toFixed(3)} В ${data.active ? '' : '(отключен)'}`;
-            container.appendChild(channelDiv);
-        }
-    }
-}
-
 function setActiveDbTab(type) {
     const oscilloTab = document.getElementById('oscillo-db-tab');
     const multiTab = document.getElementById('multi-db-tab');
@@ -1074,39 +960,115 @@ function renderDbPagination() {
     pag.appendChild(nextLi);
 }
 
+async function fetchChannelHistory(channel, limit = 1) {
+    try {
+        const resp = await fetch(`/db/oscilloscope_history?channel=${channel}&limit=${limit}`);
+        if (!resp.ok) return null;
+        return await resp.json();
+    } catch (e) {
+        return null;
+    }
+}
+
 async function loadDatabaseData() {
-    let endpoint = dbCurrentType === 'oscilloscope'
-        ? `/db/oscilloscope?page=${dbCurrentPage}&per_page=${dbPerPage}`
-        : `/db/multimeter?page=${dbCurrentPage}&per_page=${dbPerPage}`;
+    let endpoint;
+    if (dbSelectedTest) {
+        endpoint = `/tests/${dbSelectedTest}?type=${dbCurrentType}&limit=${dbPerPage}&page=${dbCurrentPage}`;
+    } else {
+        endpoint = dbCurrentType === 'oscilloscope'
+            ? `/db/oscilloscope?page=${dbCurrentPage}&per_page=${dbPerPage}`
+            : `/db/multimeter?page=${dbCurrentPage}&per_page=${dbPerPage}`;
+    }
     try {
         const response = await fetch(endpoint);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         const result = await response.json();
+        if (!result || (typeof result !== 'object')) {
+            throw new Error('Неверный формат ответа от сервера');
+        }
         let data, total, totalPages;
         if (Array.isArray(result)) {
             data = result;
             total = result.length;
             totalPages = 1;
-        } else if (result && result.data) {
+        } else if (result && result.data && Array.isArray(result.data)) {
             data = result.data;
-            total = result.total;
-            totalPages = result.total_pages;
+            total = result.total || 0;
+            totalPages = result.total_pages || 1;
+        } else if (result && (result.oscilloscope || result.multimeter)) {
+            if (dbCurrentType === 'oscilloscope' && Array.isArray(result.oscilloscope)) {
+                data = result.oscilloscope;
+                total = result.total || data.length;
+                totalPages = result.total_pages || 1;
+            } else if (dbCurrentType === 'multimeter' && Array.isArray(result.multimeter)) {
+                data = result.multimeter;
+                total = result.total || data.length;
+                totalPages = result.total_pages || 1;
+            } else {
+                data = [];
+                total = 0;
+                totalPages = 1;
+            }
         } else {
             console.error('Неизвестный формат ответа:', result);
-            return;
+            throw new Error('Неверная структура данных от сервера');
         }
         dbTotalPages = totalPages || 1;
         const tableBody = document.querySelector(dbCurrentType === 'oscilloscope' ? '#oscilloscopeData tbody' : '#multimeterData tbody');
+        if (!tableBody) {
+            throw new Error('Элемент таблицы не найден');
+        }
         tableBody.innerHTML = '';
-        data.forEach(item => {
-            const row = document.createElement('tr');
-            Object.values(item).forEach(value => {
-                const cell = document.createElement('td');
-                cell.textContent = value !== null ? value : '';
-                row.appendChild(cell);
+        if (dbCurrentType === 'oscilloscope') {
+            for (const item of data) {
+                const row = document.createElement('tr');
+                const idCell = document.createElement('td');
+                idCell.textContent = item.id || '';
+                row.appendChild(idCell);
+                const tsCell = document.createElement('td');
+                tsCell.textContent = item.timestamp || '';
+                row.appendChild(tsCell);
+                const chCell = document.createElement('td');
+                chCell.textContent = item.channel || '';
+                row.appendChild(chCell);
+                const svgCell = document.createElement('td');
+                svgCell.className = 'graph-col';
+                if (item.channel) {
+                    fetchChannelHistory(item.channel, 1).then(hist => {
+                        if (hist && hist.time && hist.voltage && hist.time.length > 0) {
+                            svgCell.innerHTML = renderMiniOscilloscopeSVG(hist.time, hist.voltage, 1500, 60, item.channel);
+                        } else {
+                            svgCell.textContent = 'Нет данных';
+                        }
+                    }).catch(() => {
+                        svgCell.textContent = 'Ошибка';
+                    });
+                } else {
+                    svgCell.textContent = 'Нет данных';
+                }
+                row.appendChild(svgCell);
+                tableBody.appendChild(row);
+            }
+        } else {
+            data.forEach(item => {
+                const row = document.createElement('tr');
+                const idCell = document.createElement('td');
+                idCell.textContent = item.id || '';
+                row.appendChild(idCell);
+                const tsCell = document.createElement('td');
+                tsCell.textContent = item.timestamp || '';
+                row.appendChild(tsCell);
+                const valueCell = document.createElement('td');
+                valueCell.textContent = item.value || '';
+                row.appendChild(valueCell);
+                const rawCell = document.createElement('td');
+                rawCell.textContent = item.raw_data ? JSON.stringify(item.raw_data) : '';
+                row.appendChild(rawCell);
+                tableBody.appendChild(row);
             });
-            tableBody.appendChild(row);
-        });
+        }
         const dataCount = document.getElementById('dataCount');
         if (dataCount) {
             dataCount.textContent = `Всего записей: ${total}`;
@@ -1116,9 +1078,53 @@ async function loadDatabaseData() {
         console.error('Ошибка при загрузке данных:', error);
         const tableBody = document.querySelector(dbCurrentType === 'oscilloscope' ? '#oscilloscopeData tbody' : '#multimeterData tbody');
         if (tableBody) {
-            tableBody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">Ошибка при загрузке данных: ${error.message}</td></tr>`;
+            const colspan = dbCurrentType === 'oscilloscope' ? 4 : 4;
+            tableBody.innerHTML = `<tr><td colspan="${colspan}" class="text-center text-danger">Ошибка при загрузке данных: ${error.message}</td></tr>`;
+        }
+        const dataCount = document.getElementById('dataCount');
+        if (dataCount) {
+            dataCount.textContent = 'Ошибка загрузки';
         }
     }
+}
+
+function decodeBase64ToFloat32Array(base64) {
+    if (!base64) return [];
+    const binary = atob(base64);
+    const len = binary.length / 4;
+    const arr = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+        arr[i] = new DataView(
+            new Uint8Array([
+                binary.charCodeAt(i*4),
+                binary.charCodeAt(i*4+1),
+                binary.charCodeAt(i*4+2),
+                binary.charCodeAt(i*4+3)
+            ]).buffer
+        ).getFloat32(0, true);
+    }
+    return arr;
+}
+
+function renderMiniOscilloscopeSVG(timeArr, voltArr, width=1000, height=60, channelName='') {
+    if (!timeArr.length || !voltArr.length) return '';
+    let minT = Math.min(...timeArr), maxT = Math.max(...timeArr);
+    let minV = Math.min(...voltArr), maxV = Math.max(...voltArr);
+    if (minT === maxT) maxT += 1;
+    if (minV === maxV) maxV += 1;
+    let color = '#00ffcc';
+    if (channelName === 'CH1') color = 'yellow';
+    else if (channelName === 'CH2') color = 'cyan';
+    else if (channelName === 'CH3') color = 'magenta';
+    else if (channelName === 'CH4') color = '#00aaff';
+    const paddingX = 40;
+    let points = timeArr.map((t, i) => {
+        let x = paddingX + ((t - minT) / (maxT - minT)) * (width - 2 * paddingX);
+        let y = height - 2 - ((voltArr[i] - minV) / (maxV - minV)) * (height-4);
+        return `${x},${y}`;
+    }).join(' ');
+    let label = channelName ? `<text x="${width/2}" y="${height-2}" fill="#fff" font-size="11" text-anchor="middle">${channelName}</text>` : '';
+    return `<svg width="100%" height="${height}" viewBox="0 0 ${width} ${height}" style="background:#222;border-radius:3px;display:block;"><polyline fill="none" stroke="${color}" stroke-width="3" points="${points}"/>${label}</svg>`;
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -1127,6 +1133,12 @@ document.addEventListener('DOMContentLoaded', function() {
     dbCurrentPage = 1;
     dbCurrentType = 'oscilloscope';
     loadDatabaseData();
+    updateDbTestSelect();
+    document.getElementById('dbTestSelect').addEventListener('change', function() {
+        dbSelectedTest = this.value;
+        dbCurrentPage = 1;
+        loadDatabaseData();
+    });
 });
 
 function updateMultimeterTestData(data) {
@@ -1142,7 +1154,6 @@ function updateMultimeterTestData(data) {
     const modeElem = document.getElementById('multimeterModeTest');
     const rangeElem = document.getElementById('multimeterRangeTest');
     const typeElem = document.getElementById('multimeterTypeTest');
-    // SVG-график для испытаний
     renderMultimeterSVGTest(multimeterTestData);
     if (valueElem && unitElem) {
         valueElem.innerText = data.value + ' ';
@@ -1157,7 +1168,6 @@ function updateMultimeterTestData(data) {
 }
 
 function updateOscilloscopeChartTestLive() {
-    // SVG-график для испытаний
     renderOscilloscopeSVGTest(oscilloscopeTestLiveData);
     const channelsBlock = {};
     ['CH1', 'CH2', 'CH3', 'CH4'].forEach((ch, i) => {
@@ -1169,14 +1179,13 @@ function updateOscilloscopeChartTestLive() {
             };
         }
     });
-    renderChannelInfoBlock('channelInfoTest', channelsBlock);
+    const trigger = window.oscilloscopeTestTrigger || { level: 1.23, mode: 'Auto', source: 'CH1', slope: 'Rising' };
+    renderChannelInfoSVGTest(channelsBlock, trigger);
 }
 
-// SVG для испытаний (осциллограф)
 function renderOscilloscopeSVGTest(channelsData) {
     const width = 2700, height = 800, padding = 60, gridCountY = 6, gridCountX = 10;
     let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#000;display:block;">`;
-    // 1. Найти общий min/max по времени и напряжению
     let allTimes = [], allVoltages = [];
     Object.values(channelsData).forEach(ch => {
         if (ch.time && ch.voltage) {
@@ -1194,7 +1203,6 @@ function renderOscilloscopeSVGTest(channelsData) {
     let minV = Math.min(...allVoltages), maxV = Math.max(...allVoltages);
     let padV = (maxV - minV) * 0.1 || 1;
     minV -= padV; maxV += padV;
-    // 2. Сетка и подписи
     for (let i = 0; i <= gridCountY; i++) {
         let y = padding + ((height - 2 * padding) * i) / gridCountY;
         let v = (maxV - minV) * (1 - i / gridCountY) + minV;
@@ -1207,7 +1215,6 @@ function renderOscilloscopeSVGTest(channelsData) {
         svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
         svg += `<text x="${x}" y="${height - padding + 22}" fill="#888" font-size="14" text-anchor="middle">${t.toFixed(2)}</text>`;
     }
-    // 3. Графики каналов
     Object.entries(channelsData).forEach(([ch, chData], idx) => {
         if (!chData.voltage || !chData.time || chData.voltage.length === 0) return;
         const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
@@ -1218,7 +1225,6 @@ function renderOscilloscopeSVGTest(channelsData) {
         }).join(' ');
         svg += `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points}"/>`;
     });
-    // 4. Легенда
     let legendX = width - padding - 120, legendY = padding;
     Object.entries(channelsData).forEach(([ch, chData], idx) => {
         const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
@@ -1230,7 +1236,6 @@ function renderOscilloscopeSVGTest(channelsData) {
     if (el) el.innerHTML = svg;
 }
 
-// SVG для испытаний (мультиметр)
 function renderMultimeterSVGTest(data) {
     const width = 1500, height = 400, padding = 50, gridCountY = 4, gridCountX = 6;
     let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#111;display:block;">`;
@@ -1246,7 +1251,6 @@ function renderMultimeterSVGTest(data) {
     const maxV = Math.max(...data.values);
     let padV = (maxV - minV) * 0.1 || 1;
     let minV2 = minV - padV, maxV2 = maxV + padV;
-    // Сетка и подписи
     for (let i = 0; i <= gridCountY; i++) {
         let y = padding + ((height - 2 * padding) * i) / gridCountY;
         let v = (maxV2 - minV2) * (1 - i / gridCountY) + minV2;
@@ -1261,7 +1265,6 @@ function renderMultimeterSVGTest(data) {
         svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
         svg += `<text x="${x}" y="${height - padding + 20}" fill="#888" font-size="13" text-anchor="middle">${label}</text>`;
     }
-    // График
     let points = data.timestamps.map((t, i) => {
         let x = padding + ((new Date(t).getTime() - minT) / ((maxT - minT) || 1)) * (width-2*padding);
         let y = padding + (height - 2 * padding) * (1 - (data.values[i] - minV2) / ((maxV2 - minV2) || 1));
@@ -1284,6 +1287,16 @@ function parseAndAddOscilloscopeTestData(line) {
                 voltage: obj.voltage,
                 color: obj.color || CHANNEL_COLORS[parseInt(obj.channel.slice(2)) - 1],
                 settings: settings
+            };
+            updateOscilloscopeChartTestLive();
+            return;
+        }
+        if (obj.type === 'trigger' && (obj.level !== undefined)) {
+            window.oscilloscopeTestTrigger = {
+                level: obj.level,
+                mode: obj.mode || 'Auto',
+                source: obj.source || 'CH1',
+                slope: obj.slope || 'Rising'
             };
             updateOscilloscopeChartTestLive();
             return;
@@ -1347,6 +1360,156 @@ function runLuaScript() {
     }
 }
 
+async function loadTestsList() {
+    try {
+        const response = await fetch('/tests');
+        if (response.ok) {
+            testsList = await response.json();
+            renderTestsList();
+        } else {
+            console.error('Ошибка загрузки списка испытаний:', response.status);
+        }
+    } catch (error) {
+        console.error('Ошибка загрузки списка испытаний:', error);
+    }
+}
+
+function renderTestsList() {
+    const testsContainer = document.getElementById('testsList');
+    if (!testsContainer) return;
+
+    if (testsList.length === 0) {
+        testsContainer.innerHTML = '<p class="text-muted">Нет сохраненных испытаний</p>';
+        return;
+    }
+
+    let html = '<div class="list-group">';
+    testsList.forEach(test => {
+        const isSelected = selectedTestNumber === test.number;
+        const selectedClass = isSelected ? 'active' : '';
+        html += `
+            <div class="list-group-item list-group-item-action ${selectedClass}" 
+                 onclick="selectTest(${test.number})" style="cursor: pointer;">
+                <div class="d-flex w-100 justify-content-between">
+                    <h6 class="mb-1">Испытание #${test.number}</h6>
+                    <small>${test.record_count} записей</small>
+                </div>
+                <p class="mb-1">Начало: ${test.start_time}</p>
+                <small>Окончание: ${test.end_time}</small>
+            </div>
+        `;
+    });
+    html += '</div>';
+    testsContainer.innerHTML = html;
+}
+
+async function selectTest(testNumber) {
+    selectedTestNumber = testNumber;
+    renderTestsList();
+    await loadTestData(testNumber);
+}
+
+async function loadTestData(testNumber) {
+    try {
+        const oscResponse = await fetch(`/tests/${testNumber}?type=oscilloscope&limit=100`);
+        if (oscResponse.ok) {
+            const oscData = await oscResponse.json();
+            if (!oscData.error) {
+                renderTestOscilloscopeData(oscData.data);
+            }
+        }
+
+        const multResponse = await fetch(`/tests/${testNumber}?type=multimeter&limit=100`);
+        if (multResponse.ok) {
+            const multData = await multResponse.json();
+            if (!multData.error) {
+                renderTestMultimeterData(multData.data);
+            }
+        }
+    } catch (error) {
+        console.error('Ошибка загрузки данных испытания:', error);
+    }
+}
+
+function renderTestOscilloscopeData(data) {
+    const container = document.getElementById('testOscilloscopeData');
+    if (!container) return;
+
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p class="text-muted">Нет данных осциллографа</p>';
+        return;
+    }
+
+    const channelsData = {};
+    data.forEach(record => {
+        if (record.channel && record.time_data && record.voltage_data) {
+            if (!channelsData[record.channel]) {
+                channelsData[record.channel] = [];
+            }
+            try {
+                const timeArray = decodeBase64ToFloat32Array(record.time_data);
+                const voltageArray = decodeBase64ToFloat32Array(record.voltage_data);
+                channelsData[record.channel].push({
+                    timestamp: record.timestamp,
+                    time: timeArray,
+                    voltage: voltageArray
+                });
+            } catch (e) {
+                console.error('Ошибка декодирования данных:', e);
+            }
+        }
+    });
+
+    let html = '<h6>Данные осциллографа:</h6>';
+    Object.keys(channelsData).forEach(channel => {
+        const channelData = channelsData[channel];
+        if (channelData.length > 0) {
+            const latest = channelData[channelData.length - 1];
+            html += `
+                <div class="mb-3">
+                    <h6>${channel}</h6>
+                    <div class="oscilloscope-svg-container">
+                        ${renderOscilloscopeSVGTest({ [channel]: { time: latest.time, voltage: latest.voltage } })}
+                    </div>
+                    <small class="text-muted">Записей: ${channelData.length}</small>
+                </div>
+            `;
+        }
+    });
+
+    container.innerHTML = html;
+}
+
+function renderTestMultimeterData(data) {
+    const container = document.getElementById('testMultimeterData');
+    if (!container) return;
+
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p class="text-muted">Нет данных мультиметра</p>';
+        return;
+    }
+
+    let html = '<h6>Данные мультиметра:</h6>';
+    html += '<div class="table-responsive"><table class="table table-sm">';
+    html += '<thead><tr><th>Время</th><th>Значение</th><th>Единица</th><th>Режим</th></tr></thead><tbody>';
+    
+    data.slice(0, 20).forEach(record => {
+        html += `
+            <tr>
+                <td>${record.timestamp}</td>
+                <td>${record.value}</td>
+                <td>${record.unit}</td>
+                <td>${record.mode}</td>
+            </tr>
+        `;
+    });
+    
+    html += '</tbody></table></div>';
+    html += `<small class="text-muted">Всего записей: ${data.length}</small>`;
+    
+    container.innerHTML = html;
+}
+
 function renderChannelInfoBlock(containerId, channelsData) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -1377,11 +1540,55 @@ function renderChannelInfoBlock(containerId, channelsData) {
     });
 }
 
-// === SVG ГРАФИКИ ===
+function renderChannelInfoSVG(channelsData, triggerData) {
+    const svgElem = document.getElementById('channelInfoSVG');
+    if (!svgElem) return;
+    const cardW = 260, cardH = 120, gap = 18;
+    const nChannels = Object.keys(channelsData).length;
+    const totalCards = nChannels + 1;
+    const svgW = Math.max(totalCards * (cardW + gap) + gap, 900);
+    const svgH = cardH + 20;
+    svgElem.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    svgElem.setAttribute('width', '100%');
+    svgElem.setAttribute('height', svgH);
+    let svg = '';
+    const trigX = gap, trigY = 10;
+    svg += `
+      <g>
+        <rect x="${trigX}" y="${trigY}" width="${cardW}" height="${cardH}" rx="12" fill="#222" stroke="#ff9800" stroke-width="2.5"/>
+        <text x="${trigX+18}" y="${trigY+32}" fill="#ff9800" font-size="22" font-family="monospace" font-weight="bold">Триггер</text>
+        <text x="${trigX+cardW-18}" y="${trigY+32}" fill="#2ecc71" font-size="16" font-family="monospace" text-anchor="end">${triggerData.mode||'Auto'}</text>
+        <text x="${trigX+18}" y="${trigY+60}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Уровень:</tspan> <tspan fill="#ff0">${triggerData.level!==undefined?triggerData.level:'--'} В</tspan></text>
+        <text x="${trigX+18}" y="${trigY+84}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Источник:</tspan> <tspan fill="#0ff">${triggerData.source||'CH1'}</tspan></text>
+        <text x="${trigX+18}" y="${trigY+108}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Slope:</tspan> <tspan fill="#0f0">${triggerData.slope||'Rising'}</tspan></text>
+      </g>
+    `;
+    let idx = 0;
+    Object.entries(channelsData).forEach(([ch, chData]) => {
+        const x = gap + (cardW + gap) * (idx + 1);
+        const y = trigY;
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        const settings = chData.settings || {};
+        const isActive = settings.display === '1' || settings.display === 1 || settings.display === true;
+        svg += `
+          <g>
+            <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="12" fill="#222" stroke="${color}" stroke-width="2.5" opacity="${isActive?'1':'0.5'}"/>
+            <text x="${x+18}" y="${y+32}" fill="${color}" font-size="22" font-family="monospace" font-weight="bold">${ch}</text>
+            <text x="${x+cardW-18}" y="${y+32}" fill="${isActive?'#2ecc71':'#e74c3c'}" font-size="16" font-family="monospace" text-anchor="end">${isActive?'Активен':'Отключен'}</text>
+            <text x="${x+18}" y="${y+60}" fill="#00ccff" font-size="16" font-family="monospace">Volts/Div: <tspan fill="#fff">${settings.volts_div??'--'} В</tspan></text>
+            <text x="${x+18}" y="${y+80}" fill="#00ccff" font-size="16" font-family="monospace">Offset: <tspan fill="#fff">${settings.offset??'--'} В</tspan></text>
+            <text x="${x+18}" y="${y+100}" fill="#00ccff" font-size="16" font-family="monospace">Coupling: <tspan fill="#fff">${settings.coupling??'--'}</tspan></text>
+            <text x="${x+18}" y="${y+120}" fill="#00ccff" font-size="16" font-family="monospace">Display: <tspan fill="#fff">${isActive?'On':'Off'}</tspan></text>
+          </g>
+        `;
+        idx++;
+    });
+    svgElem.innerHTML = svg;
+}
+
 function renderOscilloscopeSVG(channelsData) {
     const width = 2700, height = 1000, padding = 60, gridCountY = 6, gridCountX = 10;
     let svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="background:#000;display:block;">`;
-    // 1. Найти общий min/max по времени и напряжению
     let allTimes = [], allVoltages = [];
     Object.values(channelsData).forEach(ch => {
         if (ch.time && ch.voltage) {
@@ -1396,10 +1603,8 @@ function renderOscilloscopeSVG(channelsData) {
     }
     let minT = Math.min(...allTimes), maxT = Math.max(...allTimes);
     let minV = Math.min(...allVoltages), maxV = Math.max(...allVoltages);
-    // Добавим небольшой отступ
     let padV = (maxV - minV) * 0.1 || 1;
     minV -= padV; maxV += padV;
-    // 2. Сетка и подписи
     for (let i = 0; i <= gridCountY; i++) {
         let y = padding + ((height - 2 * padding) * i) / gridCountY;
         let v = (maxV - minV) * (1 - i / gridCountY) + minV;
@@ -1412,7 +1617,6 @@ function renderOscilloscopeSVG(channelsData) {
         svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
         svg += `<text x="${x}" y="${height - padding + 22}" fill="#888" font-size="14" text-anchor="middle">${t.toFixed(2)}</text>`;
     }
-    // 3. Графики каналов
     Object.entries(channelsData).forEach(([ch, chData], idx) => {
         if (!chData.voltage || !chData.time || chData.voltage.length === 0) return;
         const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
@@ -1423,7 +1627,6 @@ function renderOscilloscopeSVG(channelsData) {
         }).join(' ');
         svg += `<polyline fill="none" stroke="${color}" stroke-width="2" points="${points}"/>`;
     });
-    // 4. Легенда
     let legendX = width - padding - 120, legendY = padding;
     Object.entries(channelsData).forEach(([ch, chData], idx) => {
         const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
@@ -1432,6 +1635,82 @@ function renderOscilloscopeSVG(channelsData) {
     });
     svg += `</svg>`;
     document.getElementById('oscilloscopeSVG').innerHTML = svg;
+}
+
+function renderOscilloscopeChannelControls(channelsData) {
+    const controlsBlock = document.querySelector('#oscilloscopeChannelControls .d-flex');
+    if (!controlsBlock) return;
+    controlsBlock.innerHTML = '';
+    const couplingOptions = [
+        { value: 'DC', label: 'DC' },
+        { value: 'AC', label: 'AC' },
+        { value: 'GND', label: 'GND' }
+    ];
+    Object.entries(channelsData).forEach(([ch, chData], idx) => {
+        const settings = chData.settings || {};
+        const color = chData.color || CHANNEL_COLORS[idx] || 'yellow';
+        const isActive = settings.display === '1' || settings.display === 1 || settings.display === true;
+        const card = document.createElement('div');
+        card.className = 'p-2 border rounded bg-secondary bg-opacity-10';
+        card.style.minWidth = '220px';
+        card.style.maxWidth = '260px';
+        card.style.borderColor = color;
+        card.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)';
+        card.innerHTML = `
+            <div class="mb-2" style="color:${color};font-weight:bold;font-size:1.1em;">${ch}</div>
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="${ch}_display" ${isActive ? 'checked' : ''}>
+                <label class="form-check-label" for="${ch}_display">Включить канал</label>
+            </div>
+            <div class="mb-2">
+                <label for="${ch}_volts_div" class="form-label mb-0">Volts/Div</label>
+                <input type="number" step="0.01" min="0.001" max="50" class="form-control form-control-sm" id="${ch}_volts_div" value="${settings.volts_div ?? ''}" style="max-width:90px;display:inline-block;">
+            </div>
+            <div class="mb-2">
+                <label for="${ch}_offset" class="form-label mb-0">Offset</label>
+                <input type="number" step="0.01" min="-100" max="100" class="form-control form-control-sm" id="${ch}_offset" value="${settings.offset ?? ''}" style="max-width:90px;display:inline-block;">
+            </div>
+            <div class="mb-2">
+                <label for="${ch}_coupling" class="form-label mb-0">Coupling</label>
+                <select class="form-select form-select-sm" id="${ch}_coupling" style="max-width:90px;display:inline-block;">
+                    ${couplingOptions.map(opt => `<option value="${opt.value}" ${settings.coupling === opt.value ? 'selected' : ''}>${opt.label}</option>`).join('')}
+                </select>
+            </div>
+        `;
+        controlsBlock.appendChild(card);
+        setTimeout(() => {
+            card.querySelector(`#${ch}_display`).onchange = function() {
+                sendOscChannelSettings(ch, {
+                    display: this.checked ? 1 : 0
+                });
+            };
+            card.querySelector(`#${ch}_volts_div`).onchange = function() {
+                sendOscChannelSettings(ch, {
+                    volts_div: parseFloat(this.value)
+                });
+            };
+            card.querySelector(`#${ch}_offset`).onchange = function() {
+                sendOscChannelSettings(ch, {
+                    offset: parseFloat(this.value)
+                });
+            };
+            card.querySelector(`#${ch}_coupling`).onchange = function() {
+                sendOscChannelSettings(ch, {
+                    coupling: this.value
+                });
+            };
+        }, 0);
+    });
+}
+
+function sendOscChannelSettings(channel, settings) {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        websocket.send(JSON.stringify({
+            action: 'set_channel_settings',
+            channel: channel,
+            settings: settings
+        }));
+    }
 }
 
 function renderMultimeterSVG(data) {
@@ -1449,7 +1728,6 @@ function renderMultimeterSVG(data) {
     const maxV = Math.max(...data.values);
     let padV = (maxV - minV) * 0.1 || 1;
     let minV2 = minV - padV, maxV2 = maxV + padV;
-    // Сетка и подписи
     for (let i = 0; i <= gridCountY; i++) {
         let y = padding + ((height - 2 * padding) * i) / gridCountY;
         let v = (maxV2 - minV2) * (1 - i / gridCountY) + minV2;
@@ -1464,7 +1742,6 @@ function renderMultimeterSVG(data) {
         svg += `<line x1="${x}" y1="${padding}" x2="${x}" y2="${height - padding}" stroke="#222"/>`;
         svg += `<text x="${x}" y="${height - padding + 20}" fill="#888" font-size="13" text-anchor="middle">${label}</text>`;
     }
-    // График
     let points = data.timestamps.map((t, i) => {
         let x = padding + ((new Date(t).getTime() - minT) / ((maxT - minT) || 1)) * (width-2*padding);
         let y = padding + (height - 2 * padding) * (1 - (data.values[i] - minV2) / ((maxV2 - minV2) || 1));
@@ -1474,4 +1751,86 @@ function renderMultimeterSVG(data) {
     svg += `</svg>`;
     const el = document.getElementById('multimeterSVG');
     if (el) el.innerHTML = svg;
+}
+
+function renderChannelInfoSVGTest(channelsData, triggerData) {
+    const svgElem = document.getElementById('channelInfoSVGTest');
+    if (!svgElem) return;
+    const cardW = 260, cardH = 120, gap = 18;
+    const nChannels = Object.keys(channelsData).length;
+    const totalCards = nChannels + 1;
+    const svgW = Math.max(totalCards * (cardW + gap) + gap, 900);
+    const svgH = cardH + 20;
+    svgElem.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    svgElem.setAttribute('width', '100%');
+    svgElem.setAttribute('height', svgH);
+    let svg = '';
+    const trigX = gap, trigY = 10;
+    svg += `
+      <g>
+        <rect x="${trigX}" y="${trigY}" width="${cardW}" height="${cardH}" rx="12" fill="#222" stroke="#ff9800" stroke-width="2.5"/>
+        <text x="${trigX+18}" y="${trigY+32}" fill="#ff9800" font-size="22" font-family="monospace" font-weight="bold">Триггер</text>
+        <text x="${trigX+cardW-18}" y="${trigY+32}" fill="#2ecc71" font-size="16" font-family="monospace" text-anchor="end">${triggerData.mode||'Auto'}</text>
+        <text x="${trigX+18}" y="${trigY+60}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Уровень:</tspan> <tspan fill="#ff0">${triggerData.level!==undefined?triggerData.level:'--'} В</tspan></text>
+        <text x="${trigX+18}" y="${trigY+84}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Источник:</tspan> <tspan fill="#0ff">${triggerData.source||'CH1'}</tspan></text>
+        <text x="${trigX+18}" y="${trigY+108}" fill="#fff" font-size="16" font-family="monospace"><tspan fill="#00ccff">Slope:</tspan> <tspan fill="#0f0">${triggerData.slope||'Rising'}</tspan></text>
+      </g>
+    `;
+    let idx = 0;
+    Object.entries(channelsData).forEach(([ch, chData]) => {
+        const x = gap + (cardW + gap) * (idx + 1);
+        const y = trigY;
+        const color = chData.color || ['yellow', 'cyan', 'magenta', '#00aaff'][idx];
+        const settings = chData.settings || {};
+        const isActive = settings.display === '1' || settings.display === 1 || settings.display === true;
+        svg += `
+          <g>
+            <rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="12" fill="#222" stroke="${color}" stroke-width="2.5" opacity="${isActive?'1':'0.5'}"/>
+            <text x="${x+18}" y="${y+32}" fill="${color}" font-size="22" font-family="monospace" font-weight="bold">${ch}</text>
+            <text x="${x+cardW-18}" y="${y+32}" fill="${isActive?'#2ecc71':'#e74c3c'}" font-size="16" font-family="monospace" text-anchor="end">${isActive?'Активен':'Отключен'}</text>
+            <text x="${x+18}" y="${y+60}" fill="#00ccff" font-size="16" font-family="monospace">Volts/Div: <tspan fill="#fff">${settings.volts_div??'--'} В</tspan></text>
+            <text x="${x+18}" y="${y+80}" fill="#00ccff" font-size="16" font-family="monospace">Offset: <tspan fill="#fff">${settings.offset??'--'} В</tspan></text>
+            <text x="${x+18}" y="${y+100}" fill="#00ccff" font-size="16" font-family="monospace">Coupling: <tspan fill="#fff">${settings.coupling??'--'}</tspan></text>
+            <text x="${x+18}" y="${y+120}" fill="#00ccff" font-size="16" font-family="monospace">Display: <tspan fill="#fff">${isActive?'On':'Off'}</tspan></text>
+          </g>
+        `;
+        idx++;
+    });
+    svgElem.innerHTML = svg;
+}
+
+function updateTriggerInfo(trigger) {
+    let infoBlock = document.getElementById('oscilloscopeTriggerInfo');
+    if (!infoBlock) {
+        const parent = document.getElementById('oscilloscopeChannelControls');
+        infoBlock = document.createElement('div');
+        infoBlock.id = 'oscilloscopeTriggerInfo';
+        infoBlock.className = 'mt-2 mb-2 p-2 bg-dark rounded border border-warning';
+        if (parent) parent.parentElement.insertBefore(infoBlock, parent.nextSibling);
+    }
+    if (!trigger) {
+        infoBlock.innerHTML = '<span class="text-warning">Нет данных о триггере</span>';
+        return;
+    }
+    infoBlock.innerHTML = `
+        <span style="color:#ff9800;font-weight:bold;">Триггер:</span>
+        <span class="ms-3"><b>Уровень:</b>
+            <input type="number" id="triggerLevelInput" style="width:80px" step="0.01" value="${trigger.level !== undefined ? trigger.level : ''}"> В
+        </span>
+        <span class="ms-3"><b>Режим:</b> <span style="color:#0ff;">${trigger.mode || '--'}</span></span>
+        <span class="ms-3"><b>Источник:</b> <span style="color:#0ff;">${trigger.source || '--'}</span></span>
+        <span class="ms-3"><b>Фронт:</b> <span style="color:#0f0;">${trigger.slope || '--'}</span></span>
+    `;
+    const input = document.getElementById('triggerLevelInput');
+    if (input) {
+        input.onchange = function() {
+            const newLevel = parseFloat(input.value);
+            if (!isNaN(newLevel) && websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({
+                    action: 'set_trigger',
+                    trigger: { ...trigger, level: newLevel }
+                }));
+            }
+        };
+    }
 }
