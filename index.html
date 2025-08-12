@@ -41,18 +41,98 @@
             margin-bottom: 15px;
         }
         #multimeterValue {
-            font-size: 2.5rem;
-            font-weight: bold;
+            font-size: 5.1rem;
+            font-weight: light;
             text-align: center;
             color: #00ffcc;
             background-color: #222;
             padding: 15px;
             border-radius: 5px;
             margin: 10px 0;
+            transition: all 0.3s ease;
         }
         #multimeterUnit {
-            font-size: 1.5rem;
+            font-size: 4.9rem;
             color: #00ccff;
+        }
+        
+        /* Цветовая индикация для различных типов измерений */
+        #multimeterValue.voltage-normal {
+            color: #00ff00;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        #multimeterValue.voltage-warning {
+            color: #ffff00;
+            text-shadow: 0 0 10px #ffff00;
+        }
+        #multimeterValue.voltage-danger {
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        
+        #multimeterValue.current-normal {
+            color: #00ffff;
+            text-shadow: 0 0 10px #00ffff;
+        }
+        #multimeterValue.current-warning {
+            color: #ff8800;
+            text-shadow: 0 0 10px #ff8800;
+        }
+        #multimeterValue.current-danger {
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        
+        #multimeterValue.resistance-normal {
+            color: #00ff88;
+            text-shadow: 0 0 10px #00ff88;
+        }
+        #multimeterValue.resistance-warning {
+            color: #ffaa00;
+            text-shadow: 0 0 10px #ffaa00;
+        }
+        
+        #multimeterValue.temperature-normal {
+            color: #00ccff;
+            text-shadow: 0 0 10px #00ccff;
+        }
+        #multimeterValue.temperature-warning {
+            color: #ff6600;
+            text-shadow: 0 0 10px #ff6600;
+        }
+        #multimeterValue.temperature-danger {
+            color: #ff0000;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        
+        #multimeterValue.frequency-normal {
+            color: #cc00ff;
+            text-shadow: 0 0 10px #cc00ff;
+        }
+        #multimeterValue.frequency-warning {
+            color: #ff0088;
+            text-shadow: 0 0 10px #ff0088;
+        }
+        
+        #multimeterValue.capacitance-normal {
+            color: #88ff00;
+            text-shadow: 0 0 10px #88ff00;
+        }
+        #multimeterValue.capacitance-warning {
+            color: #ffaa00;
+            text-shadow: 0 0 10px #ffaa00;
+        }
+        
+        #multimeterValue.overload {
+            color: #ff0000;
+            text-shadow: 0 0 15px #ff0000;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
         }
         .table {
             color: #eee;
@@ -410,6 +490,15 @@
                             <div class="card-body" style="max-height: 200px; overflow-y: auto;">
                                 <div id="testsList">
                                     <p class="text-muted">Загрузка...</p>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Новый блок для среднего значения мультиметра -->
+                        <div class="card mt-3">
+                            <div class="card-header">Среднее значение мультиметра (БД)</div>
+                            <div class="card-body">
+                                <div id="avgMultimeterValueContainer" style="height:100px;width:100%;background:#111;border-radius:5px;padding:10px;display:flex;align-items:center;justify-content:center;">
+                                    <span id="avgMultimeterValue" style="font-size:2.5em;color:#00ffc0;">--</span>
                                 </div>
                             </div>
                         </div>

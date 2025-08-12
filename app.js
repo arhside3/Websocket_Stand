@@ -15,7 +15,7 @@ let multimeterData = {
 
 let lastMultimeterValue = {
     value: '--.--',
-    unit: 'В',
+    unit: 'V',
     mode: 'DC',
     range_str: 'AUTO',
     measure_type: 'Вольтметр'
@@ -71,6 +71,9 @@ let testsList = [];
 let selectedTestNumber = null;
 
 let dbSelectedTest = '';
+
+let avgMultimeterChartData = { timestamps: [], values: [] };
+let avgMultimeterChartElem = null;
 
 async function updateDbTestSelect() {
     const select = document.getElementById('dbTestSelect');
@@ -155,7 +158,7 @@ function initWebSocket() {
                 parseAndAddOscilloscopeTestData(data.line);
             } else if (data.type === 'multimeter') {
                 if (data.line) {
-                    const regex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В (DC|AC) AUTO \[Вольтметр\]/;
+                    const regex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) V (DC|AC) AUTO \[Вольтметр\]/;
                     const match = data.line.match(regex);
                     if (match) {
                         const timestamp = match[1];
@@ -163,7 +166,7 @@ function initWebSocket() {
                         const mode = match[3];
                         updateMultimeterTestData({
                             value: value,
-                            unit: 'В',
+                            unit: 'V',
                             mode: mode,
                             range_str: 'AUTO',
                             measure_type: 'Вольтметр',
@@ -206,7 +209,7 @@ function initWebSocket() {
                 addToLuaConsoleTest(`<span style="color:cyan">Начато испытание #${data.test_number}</span>`);
                 loadTestsList();
             } else if (data.output) {
-                const multimeterRegex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) В (DC|AC) AUTO \[Вольтметр\]/;
+                const multimeterRegex = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] ([\d.]+) V (DC|AC) AUTO \[Вольтметр\]/;
                 const match = data.output.match(multimeterRegex);
                 if (match) {
                     const timestamp = new Date(match[1]);
@@ -214,7 +217,7 @@ function initWebSocket() {
                     const mode = match[3];
                     const multimeterData = {
                         value: value.toString(),
-                        unit: 'В',
+                        unit: 'V',
                         mode: mode,
                         range_str: 'AUTO',
                         measure_type: 'Вольтметр',
@@ -294,30 +297,157 @@ function parseMultimeterRawData(rawDataStr, defaultValue) {
 function updateMultimeterData(data) {
     if (!measurementsActive) return;
     try {
+        // Обновляем отображение значения и единиц измерения
         document.getElementById('multimeterValue').innerHTML = 
             data.value + ' <span id="multimeterUnit">' + data.unit + '</span>';
         document.getElementById('multimeterMode').textContent = data.mode || '';
         document.getElementById('multimeterRange').textContent = data.range_str || 'AUTO';
         document.getElementById('multimeterType').textContent = data.measure_type || '';
+        
+        // Обрабатываем значение в зависимости от типа измерения
         let value = parseFloat(data.value);
         if (isNaN(value) || data.value === 'OL') {
             return;
         }
+        
         const timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
         multimeterData.timestamps.push(timestamp);
         multimeterData.values.push(value);
+        
         while (multimeterData.timestamps.length > MAX_MULTIMETER_POINTS) {
             multimeterData.timestamps.shift();
             multimeterData.values.shift();
         }
+        
         currentMultimeterMode = data.mode || 'DC';
+        
+        // Обновляем график с правильной подписью в зависимости от типа измерения
         renderMultimeterSVG(multimeterData);
         if (multimeterChart && multimeterChart.data && multimeterChart.data.datasets && multimeterChart.data.datasets[0]) {
-            multimeterChart.data.datasets[0].label = `Напряжение, В (${currentMultimeterMode})`;
+            let chartLabel = '';
+            let unit = data.unit || 'V';
+            
+            // Формируем подпись графика в зависимости от типа измерения
+            switch(data.measure_type) {
+                case 'Voltage':
+                    chartLabel = `Напряжение, ${unit} (${currentMultimeterMode})`;
+                    break;
+                case 'Current':
+                    chartLabel = `Ток, ${unit} (${currentMultimeterMode})`;
+                    break;
+                case 'Resistance':
+                    chartLabel = `Сопротивление, ${unit}`;
+                    break;
+                case 'Temperature':
+                    chartLabel = `Температура, ${unit}`;
+                    break;
+                case 'Frequency':
+                    chartLabel = `Частота, ${unit}`;
+                    break;
+                case 'Capacitance':
+                    chartLabel = `Емкость, ${unit}`;
+                    break;
+                case 'Diode Test':
+                    chartLabel = `Тест диода, ${unit}`;
+                    break;
+                case 'Continuity':
+                    chartLabel = `Прозвонка, ${unit}`;
+                    break;
+                case 'hFE':
+                    chartLabel = `Коэффициент усиления транзистора`;
+                    break;
+                default:
+                    chartLabel = `${data.measure_type}, ${unit} (${currentMultimeterMode})`;
+            }
+            
+            multimeterChart.data.datasets[0].label = chartLabel;
             multimeterChart.update();
         }
+        
+        // Обновляем цветовую индикацию в зависимости от типа измерения
+        updateMultimeterColorIndicator(data);
+        
     } catch (error) {
         console.error('Ошибка обновления данных мультиметра:', error);
+    }
+}
+
+function updateMultimeterColorIndicator(data) {
+    // Получаем элемент для цветовой индикации
+    const valueElement = document.getElementById('multimeterValue');
+    if (!valueElement) return;
+    
+    // Убираем предыдущие классы цвета
+    valueElement.classList.remove('voltage-normal', 'voltage-warning', 'voltage-danger',
+                                'current-normal', 'current-warning', 'current-danger',
+                                'resistance-normal', 'resistance-warning',
+                                'temperature-normal', 'temperature-warning', 'temperature-danger',
+                                'frequency-normal', 'frequency-warning',
+                                'capacitance-normal', 'capacitance-warning');
+    
+    if (data.value === 'OL') {
+        valueElement.classList.add('overload');
+        return;
+    }
+    
+    const value = parseFloat(data.value);
+    if (isNaN(value)) return;
+    
+    // Применяем цветовую индикацию в зависимости от типа измерения
+    switch(data.measure_type) {
+        case 'Voltage':
+            if (Math.abs(value) <= 12) {
+                valueElement.classList.add('voltage-normal');
+            } else if (Math.abs(value) <= 24) {
+                valueElement.classList.add('voltage-warning');
+            } else {
+                valueElement.classList.add('voltage-danger');
+            }
+            break;
+            
+        case 'Current':
+            if (Math.abs(value) <= 1) {
+                valueElement.classList.add('current-normal');
+            } else if (Math.abs(value) <= 5) {
+                valueElement.classList.add('current-warning');
+            } else {
+                valueElement.classList.add('current-danger');
+            }
+            break;
+            
+        case 'Resistance':
+            if (value > 0 && value < 1000000) {
+                valueElement.classList.add('resistance-normal');
+            } else {
+                valueElement.classList.add('resistance-warning');
+            }
+            break;
+            
+        case 'Temperature':
+            if (value >= -40 && value <= 80) {
+                valueElement.classList.add('temperature-normal');
+            } else if (value >= -60 && value <= 120) {
+                valueElement.classList.add('temperature-warning');
+            } else {
+                valueElement.classList.add('temperature-danger');
+            }
+            break;
+            
+        case 'Frequency':
+            if (value > 0 && value <= 1000000) {
+                valueElement.classList.add('frequency-normal');
+            } else {
+                valueElement.classList.add('frequency-warning');
+            }
+            break;
+            
+        case 'Capacitance':
+            if (value > 0 && value <= 1000000) {
+                valueElement.classList.add('capacitance-normal');
+            } else {
+                valueElement.classList.add('capacitance-warning');
+            }
+            break;
     }
 }
 
@@ -758,6 +888,11 @@ function initApp() {
     
     initCharts();
     
+    avgMultimeterChartElem = document.getElementById('avgMultimeterChart');
+    if (selectedTestNumber) {
+        loadAvgMultimeterChart(selectedTestNumber);
+    }
+    
     const stopOscBtn = document.getElementById('stopOscilloscopeBtn');
     const startOscBtn = document.getElementById('startOscilloscopeBtn');
     
@@ -839,7 +974,7 @@ function initMultimeterChart(ctx) {
         data: {
             labels: [],
             datasets: [{
-                label: `Напряжение, В (${currentMultimeterMode})`,
+                label: `Напряжение, V (${currentMultimeterMode})`,
                 data: [],
                 borderColor: '#00ffcc',
                 backgroundColor: 'rgba(0, 255, 204, 0.1)',
@@ -871,7 +1006,7 @@ function initMultimeterChart(ctx) {
                         color: '#aaa',
                         maxTicksLimit: 8,
                         callback: function(value) {
-                            return value.toFixed(3) + ' В';
+                            return value.toFixed(3) + ' V';
                         }
                     }
                 },
@@ -900,7 +1035,7 @@ function initMultimeterChart(ctx) {
                     bodyColor: '#00ffcc',
                     callbacks: {
                         label: function(context) {
-                            return `Значение: ${context.parsed.y.toFixed(3)} В`;
+                            return `Значение: ${context.parsed.y.toFixed(3)} V`;
                         }
                     }
                 }
@@ -1138,6 +1273,10 @@ document.addEventListener('DOMContentLoaded', function() {
         dbSelectedTest = this.value;
         dbCurrentPage = 1;
         loadDatabaseData();
+        // Если находимся на вкладке испытаний, обновляем график
+        if (document.getElementById('avgMultimeterChart')) {
+            loadAvgMultimeterChart(this.value);
+        }
     });
 });
 
@@ -1407,6 +1546,7 @@ async function selectTest(testNumber) {
     selectedTestNumber = testNumber;
     renderTestsList();
     await loadTestData(testNumber);
+    loadAvgMultimeterChart(testNumber);
 }
 
 async function loadTestData(testNumber) {
@@ -1832,5 +1972,70 @@ function updateTriggerInfo(trigger) {
                 }));
             }
         };
+    }
+}
+
+// Функция для загрузки и отображения среднего значения мультиметра по испытанию
+async function loadAvgMultimeterChart(testNumber) {
+    const valueElem = document.getElementById('avgMultimeterValue');
+    if (!testNumber) {
+        if (valueElem) valueElem.textContent = '--';
+        return;
+    }
+    try {
+        // Получаем все записи мультиметра для испытания
+        const resp = await fetch(`/tests/${testNumber}?type=multimeter&limit=1000`);
+        if (!resp.ok) throw new Error('Ошибка загрузки данных');
+        const result = await resp.json();
+        let records = [];
+        if (Array.isArray(result)) {
+            records = result;
+        } else if (result.data && Array.isArray(result.data)) {
+            records = result.data;
+        } else if (result.multimeter && Array.isArray(result.multimeter)) {
+            records = result.multimeter;
+        }
+        if (!records.length) {
+            if (valueElem) valueElem.textContent = '--';
+            return;
+        }
+
+        // Группируем значения по единицам измерения
+        const groupedData = {};
+        records.forEach(record => {
+            const unit = record.unit || 'V';
+            if (!groupedData[unit]) {
+                groupedData[unit] = {
+                    values: [],
+                    sum: 0,
+                    count: 0
+                };
+            }
+            const value = parseFloat(record.value);
+            if (!isNaN(value)) {
+                groupedData[unit].values.push(value);
+                groupedData[unit].sum += value;
+                groupedData[unit].count++;
+            }
+        });
+
+        // Формируем текст со средними значениями для каждой единицы измерения
+        const avgText = [];
+        Object.entries(groupedData).forEach(([unit, data]) => {
+            if (data.count > 0) {
+                const avg = data.sum / data.count;
+                avgText.push(`${avg.toFixed(3)} ${unit}`);
+            }
+        });
+
+        // Если есть данные, отображаем их в строку через запятую
+        if (avgText.length > 0) {
+            if (valueElem) valueElem.textContent = avgText.join(', ');
+        } else {
+            if (valueElem) valueElem.textContent = '--';
+        }
+    } catch (e) {
+        console.error('Ошибка при загрузке данных мультиметра:', e);
+        if (valueElem) valueElem.textContent = 'Ошибка';
     }
 }
