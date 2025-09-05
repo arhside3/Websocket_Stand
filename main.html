@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3D Визуализация функции sin(x) * cos(x)</title>
+    <script src="https://code.highcharts.com/highcharts.js"></script>
+    <script src="https://code.highcharts.com/modules/heatmap.js"></script>
+    <script src="https://code.highcharts.com/modules/exporting.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #333;
+            background: #1a2a3a;
+        }
+        
+        .app-container {
+            display: flex;
+            height: 100vh;
+            flex-direction: column;
+        }
+        
+        .header {
+            padding: 15px;
+            background: linear-gradient(135deg, #000000, #1900ff);
+            color: white;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        
+        h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .heatmap-panel {
+            width: 350px;
+            background: rgb(0, 0, 0);
+            padding: 15px 10px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 3px 0 10px rgba(0, 0, 0, 0.2);
+            z-index: 10;
+            overflow-y: auto;
+        }
+        
+        .panel-title {
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: #ffffff;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 8px;
+        }
+        
+        #heatmap-container {
+            flex: 1;
+            min-height: 300px;
+        }
+        
+        .controls {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        .control-group h3 {
+            font-size: 14px;
+            margin-bottom: 8px;
+            color: #ffffff;
+        }
+        
+        .control-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        
+        button {
+            padding: 6px 10px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #2980b9;
+        }
+        
+        .terrain-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+        
+        #terrain-container {
+            flex: 1;
+            background: #1a2a3a;
+        }
+        
+        .terrain-controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 10px 15px;
+            border-radius: 5px;
+            display: flex;
+            gap: 10px;
+            z-index: 100;
+        }
+        
+        .instructions {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            max-width: 250px;
+        }
+        
+        .instructions p {
+            margin: 5px 0;
+        }
+        
+        .parameter-table-container {
+            overflow-x: auto;
+            margin-bottom: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .parameter-table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 11px;
+        }
+        
+        .parameter-table th, .parameter-table td {
+            border: 1px solid #444;
+            padding: 4px;
+            text-align: center;
+            min-width: 40px;
+        }
+        
+        .parameter-table th {
+            color: rgb(255, 255, 255);
+            position: sticky;
+            top: 0;
+            background-color: #2c3e50 !important;
+        }
+        
+        .parameter-table tr:nth-child(even) {
+            background-color: #1a1a1a;
+        }
+        
+        .parameter-table tr:hover {
+            background-color: #000000;
+        }
+        
+        .table-header-row {
+            background-color: #2c3e50 !important;
+            color: #ffffff;
+        }
+        
+        .table-header-cell {
+            writing-mode: vertical-lr;
+            transform: rotate(180deg);
+            text-orientation: mixed;
+            white-space: nowrap;
+            padding: 8px 4px !important;
+        }
+        
+        .map-values {
+            font-weight: bold;
+            background-color: #2c3e50;
+            color: white;
+        }
+        
+        .spark-low {
+            background: linear-gradient(135deg, #ff4d4d, #cc0000);
+            color: white;
+        }
+        
+        .spark-medium {
+            background: linear-gradient(135deg, #ffcc00, #ff9900);
+            color: black;
+        }
+        
+        .spark-high {
+            background: linear-gradient(135deg, #00cc00, #009900);
+            color: black;
+        }
+        
+        .delay-low {
+            background: linear-gradient(135deg, #00cc00, #009900);
+            color: black;
+        }
+        
+        .delay-medium {
+            background: linear-gradient(135deg, #ffcc00, #ff9900);
+            color: black;
+        }
+        
+        .delay-high {
+            background: linear-gradient(135deg, #ff4d4d, #cc0000);
+            color: white;
+        }
+        
+        .current-point {
+            position: relative;
+            z-index: 1;
+        }
+        
+        .current-point::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border: 2px solid #ff00ff;
+            box-shadow: 0 0 8px #ff00ff, inset 0 0 8px rgba(255, 0, 255, 0.3);
+            z-index: 2;
+            pointer-events: none;
+        }
+        
+        .engine-status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 100;
+        }
+        
+        .slider-container {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            color: white;
+        }
+        
+        .slider-container label {
+            font-size: 12px;
+        }
+        
+        input[type="range"] {
+            width: 100%;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                flex-direction: column;
+            }
+            
+            .heatmap-panel {
+                width: 100%;
+                height: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">        
+        <div class="main-content">
+            <div class="heatmap-panel">
+                <h2 class="panel-title">RPM Угол опережения</h2>
+                
+                <div class="parameter-table-container">
+                    <table class="parameter-table" id="spark-angle-table">
+                    </table>
+                </div>
+                
+                <h2 class="panel-title">RPM Задержка</h2>
+                
+                <div class="parameter-table-container">
+                    <table class="parameter-table" id="delay-table">
+                    </table>
+                </div>
+                
+                
+                <div class="controls">
+                    <div class="control-group">
+                        <h3>Управление</h3>
+                        <div class="control-buttons">
+                            <button>No select</button>
+                            <button>Refresh</button>
+                            <button>Send</button>
+                            <button>Burn</button>
+                            <button>Remap</button>
+                            <button>Import</button>
+                            <button id="go-card">Графики</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="terrain-panel">
+                <div id="terrain-container"></div>
+                
+                <div class="engine-status">
+                    Текущая точка: RPM=<span id="status-rpm">3000</span>, 
+                    MAP=<span id="status-map">375</span>, 
+                    Угол=<span id="status-angle">0</span>°, 
+                    Задержка=<span id="status-delay">0</span>мс
+                </div>
+                
+                <div class="terrain-controls">
+                    <button id="reset-view">Сбросить вид</button>
+                    <button id="toggle-wireframe">Переключить каркас</button>
+                    <button id="change-color">Сменить палитру</button>
+                </div>
+                
+                <div class="instructions">
+                    <p>🖱️ ЛКМ + движение - вращение</p>
+                    <p>🖱️ ПКМ + движение - перемещение</p>
+                    <p>🖱️ Колесико - масштабирование</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const rpmHeaders = [800, 900, 1000, 1500, 2000, 2500, 3000, 4000, 4500, 5000, 5500, 6000, 6500, 7000, 7500, 8000];
+        const mapValues = [425, 400, 375, 350, 325];
+        
+        const sparkAngleData = [];
+        for (let i = 0; i < mapValues.length; i++) {
+            const row = [mapValues[i]];
+            for (let j = 0; j < rpmHeaders.length; j++) {
+                row.push(Math.floor(Math.random() * 21) + 20);
+            }
+            sparkAngleData.push(row);
+        }
+        
+        const delayData = [];
+        for (let i = 0; i < mapValues.length; i++) {
+            const row = [mapValues[i]];
+            for (let j = 0; j < rpmHeaders.length; j++) {
+                row.push(Math.floor(Math.random() * 14001) + 1000);
+            }
+            delayData.push(row);
+        }
+
+        let currentRPM = 3000;
+        let currentMAP = 375;
+        let currentPoint = null;
+
+        function getSparkAngleClass(value) {
+            if (value <= 25) return 'spark-low';
+            if (value <= 35) return 'spark-medium';
+            return 'spark-high';
+        }
+
+        function getDelayClass(value) {
+            if (value <= 5000) return 'delay-low';
+            if (value <= 10000) return 'delay-medium';
+            return 'delay-high';
+        }
+
+        function findClosestIndex(arr, value) {
+            return arr.reduce((closest, current, index) => {
+                return Math.abs(current - value) < Math.abs(arr[closest] - value) ? index : closest;
+            }, 0);
+        }
+
+        function updateCurrentPoint() {
+            const rpmIndex = findClosestIndex(rpmHeaders, currentRPM);
+            const mapIndex = findClosestIndex(mapValues, currentMAP);
+            
+            const angleValue = sparkAngleData[mapIndex][rpmIndex + 1];
+            const delayValue = delayData[mapIndex][rpmIndex + 1];
+            
+            document.getElementById('status-rpm').textContent = currentRPM;
+            document.getElementById('status-map').textContent = currentMAP;
+            document.getElementById('status-angle').textContent = angleValue;
+            document.getElementById('status-delay').textContent = delayValue;
+            
+            highlightTableCells('spark-angle-table', mapIndex, rpmIndex);
+            highlightTableCells('delay-table', mapIndex, rpmIndex);
+            
+            update3DPoint(mapIndex, rpmIndex, angleValue);
+        }
+
+        function highlightTableCells(tableId, mapIndex, rpmIndex) {
+            const table = document.getElementById(tableId);
+            const cells = table.querySelectorAll('td.current-point');
+            cells.forEach(cell => cell.classList.remove('current-point'));
+            
+            const row = table.rows[mapIndex + 1];
+            if (row) {
+                const cell = row.cells[rpmIndex + 1];
+                if (cell) {
+                    cell.classList.add('current-point');
+                    cell.scrollIntoView({block: 'nearest', inline: 'nearest'});
+                }
+            }
+        }
+
+        function update3DPoint(mapIndex, rpmIndex, angleValue) {
+            if (currentPoint) {
+                scene.remove(currentPoint);
+                currentPoint.geometry.dispose();
+                currentPoint.material.dispose();
+            }
+            
+            const segments = 50;
+            const size = 10;
+            const x = (rpmIndex / (rpmHeaders.length - 1) - 0.5) * size;
+            const y = (mapIndex / (mapValues.length - 1) - 0.5) * size;
+            
+            const z = funcMap[currentFunction](x, y) * heightScale;
+            
+            const geometry = new THREE.SphereGeometry(0.3, 16, 16);
+            const material = new THREE.MeshBasicMaterial({ color: 0xFFFFFF });
+            currentPoint = new THREE.Mesh(geometry, material);
+            currentPoint.position.set(x, z, y);
+            
+            scene.add(currentPoint);
+        }
+
+        function createTable(tableId, headers, data, tableType) {
+            const table = document.getElementById(tableId);
+            table.innerHTML = '';
+            
+            const headerRow = document.createElement('tr');
+            headerRow.className = 'table-header-row';
+            
+            const emptyHeader = document.createElement('th');
+            emptyHeader.textContent = 'RPM';
+            headerRow.appendChild(emptyHeader);
+            
+            headers.forEach(rpm => {
+                const th = document.createElement('th');
+                th.textContent = rpm;
+                th.className = 'table-header-cell';
+                headerRow.appendChild(th);
+            });
+            
+            table.appendChild(headerRow);
+            
+            data.forEach((rowData, rowIndex) => {
+                const row = document.createElement('tr');
+                
+                const mapCell = document.createElement('td');
+                mapCell.textContent = rowData[0];
+                mapCell.className = 'map-values';
+                row.appendChild(mapCell);
+                
+                for (let i = 1; i < rowData.length; i++) {
+                    const cell = document.createElement('td');
+                    cell.textContent = rowData[i];
+                    
+                    if (tableType === 'spark') {
+                        cell.classList.add(getSparkAngleClass(rowData[i]));
+                    } else if (tableType === 'delay') {
+                        cell.classList.add(getDelayClass(rowData[i]));
+                    }
+                    
+                    cell.setAttribute('data-rpm-index', i - 1);
+                    cell.setAttribute('data-map-index', rowIndex);
+                    
+                    row.appendChild(cell);
+                }
+                
+                table.appendChild(row);
+            });
+        }
+
+        let scene, camera, renderer, controls, terrain;
+        let heightScale = 1;
+        let rotationSpeed = 0;
+        let currentFunction = 'sincos';
+        let wireframeVisible = false;
+
+        function initThreeJS() {
+            const container = document.getElementById('terrain-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a2a3a);
+
+            camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+            camera.position.set(50, 50, 50);
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(width, height);
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            createFunctionTerrain();
+
+            window.addEventListener('resize', () => {
+                const width = container.clientWidth;
+                const height = container.clientHeight;
+
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+
+                renderer.setSize(width, height);
+            });
+
+            updateCurrentPoint();
+            
+            animate();
+        }
+
+        function createFunctionTerrain() {
+            if (terrain) {
+                scene.remove(terrain);
+                terrain.geometry.dispose();
+                terrain.material.dispose();
+                terrain = null;
+            }
+
+            const segments = 50;
+            const size = 10;
+            const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
+
+            const vertices = geometry.attributes.position.array;
+            const colors = [];
+            const color = new THREE.Color();
+
+            for (let i = 0; i < vertices.length; i += 3) {
+                const x = vertices[i];
+                const y = vertices[i + 1];
+                
+                let z;
+                switch(currentFunction) {
+                    case 'sincos':
+                        z = z = interp2D(x, y, segments, size, funcMap[currentFunction]);
+                        break;
+                    case 'sin':
+                        z = Math.sin(x);
+                        break;
+                    case 'cos':
+                        z = Math.cos(x);
+                        break;
+                    default:
+                        z = z = interp2D(x, y, segments, size, funcMap[currentFunction]);
+                }
+                
+                vertices[i + 2] = z * 1 * heightScale;
+
+                const normalizedValue = (z + 1) / 2;
+                
+                if(normalizedValue < 0.5) {
+                    color.setRGB(2 * normalizedValue, 1, 0);
+                } else {
+                    color.setRGB(1, 2 * (1 - normalizedValue), 0);
+                }
+                colors.push(color.r, color.g, color.b);
+            }
+
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.computeVertexNormals();
+
+            const material = new THREE.MeshPhongMaterial({
+                vertexColors: true,
+                wireframe: wireframeVisible,
+                side: THREE.DoubleSide,
+                flatShading: true
+            });
+
+            terrain = new THREE.Mesh(geometry, material);
+            terrain.rotation.x = -Math.PI / 2;
+            scene.add(terrain);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (rotationSpeed > 0 && terrain) {
+                terrain.rotation.y += rotationSpeed / 1000;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function interp2D(x, y, segments, size, func) {
+            const step = size / segments;
+            const halfSize = size / 2;
+
+            const x0 = Math.floor((x + halfSize) / step);
+            const y0 = Math.floor((y + halfSize) / step);
+            const x1 = x0 + 1;
+            const y1 = y0 + 1;
+
+            if (x0 < 0 || y0 < 0 || x1 > segments || y1 > segments) return 0;
+
+            const x0Pos = x0 * step - halfSize;
+            const y0Pos = y0 * step - halfSize;
+            const x1Pos = x1 * step - halfSize;
+            const y1Pos = y1 * step - halfSize;
+
+            const Q11 = func(x0Pos, y0Pos);
+            const Q21 = func(x1Pos, y0Pos);
+            const Q12 = func(x0Pos, y1Pos);
+            const Q22 = func(x1Pos, y1Pos);
+
+            const R1 = ((x1Pos - x) / (x1Pos - x0Pos)) * Q11 + ((x - x0Pos) / (x1Pos - x0Pos)) * Q21;
+            const R2 = ((x1Pos - x) / (x1Pos - x0Pos)) * Q12 + ((x - x0Pos) / (x1Pos - x0Pos)) * Q22;
+
+            const P = ((y1Pos - y) / (y1Pos - y0Pos)) * R1 + ((y - y0Pos) / (y1Pos - y0Pos)) * R2;
+
+            return P;
+        }
+
+        document.getElementById('go-card').addEventListener('click', () => {
+            window.location.href = 'card.html';
+        });
+
+        const funcMap = {
+            sincos: (x, y) => Math.sin(x) * Math.cos(y),
+            sin: (x, y) => Math.sin(x),
+            cos: (x, y) => Math.cos(x)
+        };
+
+        function initControls() {
+            document.getElementById('reset-view').addEventListener('click', () => {
+                controls.reset();
+                camera.position.set(50, 50, 50);
+                camera.lookAt(0, 0, 0);
+            });
+
+            document.getElementById('toggle-wireframe').addEventListener('click', () => {
+                wireframeVisible = !wireframeVisible;
+                terrain.material.wireframe = wireframeVisible;
+            });
+
+            document.getElementById('change-color').addEventListener('click', () => {
+                const colors = [0x3498db, 0xe74c3c, 0x2ecc71, 0xf39c12, 0x9b59b6];
+                const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                terrain.material.color.setHex(randomColor);
+            });
+
+            document.getElementById('rpm-slider').addEventListener('input', (e) => {
+                currentRPM = parseInt(e.target.value);
+                document.getElementById('current-rpm').textContent = currentRPM;
+                updateCurrentPoint();
+            });
+
+            document.getElementById('map-slider').addEventListener('input', (e) => {
+                currentMAP = parseInt(e.target.value);
+                document.getElementById('current-map').textContent = currentMAP;
+                updateCurrentPoint();
+            });
+
+            document.querySelectorAll('[data-param]').forEach(button => {
+                button.addEventListener('click', () => {
+                    currentFunction = button.getAttribute('data-param');
+                    createFunctionTerrain();
+                    updateCurrentPoint();
+                });
+            });
+        }
+
+        window.addEventListener('load', () => {
+            createTable('spark-angle-table', rpmHeaders, sparkAngleData, 'spark');
+            createTable('delay-table', rpmHeaders, delayData, 'delay');
+            
+            initThreeJS();
+            initControls();
+        });
+    </script>
+</body>
+</html>

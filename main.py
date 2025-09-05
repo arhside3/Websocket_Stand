@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     DateTime,
     text,
+    LargeBinary,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -73,6 +74,27 @@ class MultimeterData(Base):
     range_str = Column(String)
     measure_type = Column(String)
     raw_data = Column(JSON)
+
+class UARTData(Base):
+    __tablename__ = 'uart'
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(String)
+    start_byte = Column(Integer)
+    command = Column(Integer)
+    status = Column(Integer)
+    payload_len = Column(Integer)
+    payload = Column(LargeBinary)  # Данные в бинарном формате
+    crc_one = Column(Integer)
+    crc_two = Column(Integer)
+
+def setup_database():
+    print("Проверка и создание рабочих таблиц базы данных...")
+    try:
+        Base.metadata.create_all(engine)
+        print("Рабочие таблицы базы данных готовы")
+    except Exception as e:
+        print(f"Ошибка при создании рабочих таблиц: {e}")
+        traceback.print_exc()
 
 
 def setup_database():
@@ -182,6 +204,37 @@ def save_multimeter_data(data, force_save=False):
     finally:
         session.close()
 
+
+def save_uart_data(data):
+    session = Session()
+    try:
+        insert_sql = """
+        INSERT INTO uart (timestamp, start_byte, command, status, payload_len, payload, crc_one, crc_two)
+        VALUES (:timestamp, :start_byte, :command, :status, :payload_len, :payload, :crc_one, :crc_two)
+        """
+        session.execute(
+            text(insert_sql),
+            {
+                'timestamp': data.get('timestamp', ''),
+                'start_byte': data.get('start_byte'),
+                'command': data.get('command'),
+                'status': data.get('status'),
+                'payload_len': data.get('payload_len'),
+                'payload': data.get('payload'),  # bytes
+                'crc_one': data.get('crc_one'),
+                'crc_two': data.get('crc_two'),
+            },
+        )
+        session.commit()
+        print("Данные UART сохранены в рабочую таблицу")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения данных UART: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
 
 def get_oscilloscope_data_from_db(limit=100):
     session = Session()
@@ -979,20 +1032,17 @@ current_oscilloscope_table = None
 
 
 def get_next_test_number():
-    """Получает следующий номер испытания"""
     session = Session()
     try:
         result = session.execute(
             text(
-                "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'мультиметр_%' OR name LIKE 'осциллограф_%')"
+                "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'мультиметр_%' OR name LIKE 'осциллограф_%' OR name LIKE 'uart_%')"
             )
         )
         existing_tests = set()
         for row in result:
             name = row[0]
-            if name.startswith('мультиметр_') or name.startswith(
-                'осциллограф_'
-            ):
+            if name.startswith('мультиметр_') or name.startswith('осциллограф_') or name.startswith('uart_'):
                 try:
                     number = int(name.split('_')[-1])
                     existing_tests.add(number)
@@ -1003,47 +1053,96 @@ def get_next_test_number():
         return max(existing_tests) + 1
     except Exception as e:
         print(f"Ошибка при получении номера испытания: {e}")
+        traceback.print_exc()
         return 1
+    finally:
+        session.close()
+
+def create_uart_table(test_number):
+    """Создаёт таблицу для данных UART нового испытания"""
+    session = Session()
+    try:
+        uart_table = f"uart_{test_number}"
+        create_uart_sql = f"""
+        CREATE TABLE IF NOT EXISTS {uart_table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            start_byte INTEGER,
+            command INTEGER,
+            status INTEGER,
+            payload_len INTEGER,
+            payload BLOB,
+            crc_one INTEGER,
+            crc_two INTEGER
+        )"""
+        session.execute(text(create_uart_sql))
+        session.commit()
+        print(f"Создана таблица испытания: {uart_table}")
+        return uart_table
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка при создании таблицы UART: {e}")
+        return None
     finally:
         session.close()
 
 
 def create_test_tables(test_number):
-    """Создаёт две таблицы для нового испытания: мультиметр_N и осциллограф_N"""
     session = Session()
     try:
         mult_table = f"мультиметр_{test_number}"
         osc_table = f"осциллограф_{test_number}"
+        uart_table = f"uart_{test_number}"
+
         create_mult_sql = f"""
         CREATE TABLE IF NOT EXISTS {mult_table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
+            timestamp TEXT,
             value TEXT,
             unit TEXT,
             mode TEXT,
             range_str TEXT,
             measure_type TEXT,
-            raw_data TEXT
-        )"""
+            raw_data JSON
+        )
+        """
+
         create_osc_sql = f"""
         CREATE TABLE IF NOT EXISTS {osc_table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
+            timestamp TEXT,
             channel TEXT,
             time_data TEXT,
             voltage_data TEXT,
-            raw_data TEXT
-        )"""
+            raw_data JSON
+        )
+        """
+
+        create_uart_sql = f"""
+        CREATE TABLE IF NOT EXISTS {uart_table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            start_byte INTEGER,
+            command INTEGER,
+            status INTEGER,
+            payload_len INTEGER,
+            payload BLOB,
+            crc_one INTEGER,
+            crc_two INTEGER
+        )
+        """
+
         session.execute(text(create_mult_sql))
         session.execute(text(create_osc_sql))
+        session.execute(text(create_uart_sql))
         session.commit()
-        print(f"Созданы таблицы испытания: {mult_table}, {osc_table}")
-        return mult_table, osc_table
+        print(f"Созданы таблицы испытания: {mult_table}, {osc_table}, {uart_table}")
+        return mult_table, osc_table, uart_table
     except Exception as e:
         session.rollback()
         print(f"Ошибка при создании таблиц испытания: {e}")
         traceback.print_exc()
-        return None, None
+        return None, None, None
     finally:
         session.close()
 
@@ -1135,15 +1234,49 @@ def save_multimeter_data_to_test(data, mult_table):
     finally:
         session.close()
 
+def save_uart_data_to_test(data, uart_table):
+    if not uart_table:
+        return False
+    session = Session()
+    try:
+        insert_sql = f"""
+        INSERT INTO {uart_table} (
+            timestamp, start_byte, command, status, payload_len, payload, crc_one, crc_two
+        )
+        VALUES (
+            :timestamp, :start_byte, :command, :status, :payload_len, :payload, :crc_one, :crc_two
+        )
+        """
+        session.execute(
+            text(insert_sql),
+            {
+                'timestamp': data.get('timestamp', ''),
+                'start_byte': data.get('start_byte'),
+                'command': data.get('command'),
+                'status': data.get('status'),
+                'payload_len': data.get('payload_len'),
+                'payload': data.get('payload'),  # bytes
+                'crc_one': data.get('crc_one'),
+                'crc_two': data.get('crc_two'),
+            },
+        )
+        session.commit()
+        print(f"Данные UART сохранены в таблицу испытания: {uart_table}")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения данных UART в таблицу испытания: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
+
 
 def start_new_test():
-    """Начинает новое испытание"""
-    global current_test_number, current_multimeter_table, current_oscilloscope_table
+    global current_test_number, current_multimeter_table, current_oscilloscope_table, current_uart_table
     current_test_number = get_next_test_number()
-    current_multimeter_table, current_oscilloscope_table = create_test_tables(
-        current_test_number
-    )
-    if current_multimeter_table and current_oscilloscope_table:
+    current_multimeter_table, current_oscilloscope_table, current_uart_table = create_test_tables(current_test_number)
+    if current_multimeter_table and current_oscilloscope_table and current_uart_table:
         print(f"Начато новое испытание #{current_test_number}")
         move_working_tables_to_test(current_test_number)
         return current_test_number
@@ -1151,6 +1284,7 @@ def start_new_test():
         print("Ошибка при создании таблиц испытания")
         return None
 
+current_uart_table = None
 
 def get_test_list():
     """Возвращает список всех испытаний"""
@@ -1460,6 +1594,12 @@ async def handle_websocket(websocket):
     try:
         async for message in websocket:
             try:
+                if isinstance(message, bytes):
+                    # Обработка приходящего бинарного сообщения — UART пакет
+                    process_uart_packet(message)
+                    continue  # Не пытаемся парсить бинарные данные как JSON
+
+                # Обрабатываем текстовое сообщение
                 data = json.loads(message)
 
                 if 'timestamp' in data and 'value' in data and 'unit' in data:
@@ -1468,13 +1608,9 @@ async def handle_websocket(websocket):
                     print(f"Флаг force_save: {force_save}")
                     if force_save:
                         save_multimeter_data(data, force_save=True)
-                        print(
-                            f"Данные мультиметра сохранены (force_save): {data}"
-                        )
+                        print(f"Данные мультиметра сохранены (force_save): {data}")
 
-                    await send_to_all_websocket_clients(
-                        {"type": "multimeter", "data": data}
-                    )
+                    await send_to_all_websocket_clients({"type": "multimeter", "data": data})
                     continue
 
                 action = data.get('action')
@@ -1485,14 +1621,7 @@ async def handle_websocket(websocket):
 
                     test_number = start_new_test()
                     if test_number:
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    'type': 'test_started',
-                                    'test_number': test_number,
-                                }
-                            )
-                        )
+                        await websocket.send(json.dumps({'type': 'test_started', 'test_number': test_number}))
 
                     await run_lua_test_parallel_async(script_name, websocket)
 
@@ -1503,14 +1632,7 @@ async def handle_websocket(websocket):
                     if not global_multimeter:
                         global_multimeter = UT803Reader()
                         global_multimeter.connect_serial() or global_multimeter.connect_hid()
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'measurements_started'},
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'measurements_started'}}))
 
                 elif action == 'stop_measurements':
                     is_measurement_active = False
@@ -1518,20 +1640,11 @@ async def handle_websocket(websocket):
                         try:
                             global_visualizer.oscilloscope.close()
                         except Exception as e:
-                            print(
-                                f"Ошибка при разрыве соединения с осциллографом: {e}"
-                            )
+                            print(f"Ошибка при разрыве соединения с осциллографом: {e}")
                         global_visualizer.oscilloscope = None
                         global_visualizer.connected = False
                         print("Соединение с осциллографом разорвано.")
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'measurements_stopped'},
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'measurements_stopped'}}))
 
                 elif action == 'start_oscilloscope':
                     if not global_visualizer:
@@ -1541,37 +1654,21 @@ async def handle_websocket(websocket):
                     is_oscilloscope_running = True
                     if not oscilloscope_task or oscilloscope_task.done():
                         loop = asyncio.get_running_loop()
-                        oscilloscope_task = loop.create_task(
-                            run_oscilloscope()
-                        )
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'oscilloscope_started'},
-                            }
-                        )
-                    )
+                        oscilloscope_task = loop.create_task(run_oscilloscope())
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'oscilloscope_started'}}))
+
                 elif action == 'stop_oscilloscope':
                     is_oscilloscope_running = False
                     if global_visualizer and global_visualizer.oscilloscope:
                         try:
                             global_visualizer.oscilloscope.close()
                         except Exception as e:
-                            print(
-                                f"Ошибка при разрыве соединения с осциллографом: {e}"
-                            )
+                            print(f"Ошибка при разрыве соединения с осциллографом: {e}")
                         global_visualizer.oscilloscope = None
                         global_visualizer.connected = False
                         print("Соединение с осциллографом разорвано.")
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'oscilloscope_stopped'},
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'oscilloscope_stopped'}}))
+
                 elif action == 'start_multimeter':
                     if not global_multimeter:
                         global_multimeter = UT803Reader()
@@ -1580,63 +1677,35 @@ async def handle_websocket(websocket):
                     if not multimeter_task or multimeter_task.done():
                         loop = asyncio.get_running_loop()
                         multimeter_task = loop.create_task(run_multimeter())
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'multimeter_started'},
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'multimeter_started'}}))
+
                 elif action == 'stop_multimeter':
                     is_multimeter_running = False
                     if global_multimeter:
                         try:
                             global_multimeter.disconnect()
                         except Exception as e:
-                            print(
-                                f"Ошибка при разрыве соединения с мультиметром: {e}"
-                            )
+                            print(f"Ошибка при разрыве соединения с мультиметром: {e}")
                         global_multimeter = None
                         print("Соединение с мультиметром разорвано.")
-                    await websocket.send(
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'data': {'status': 'multimeter_stopped'},
-                            }
-                        )
-                    )
+                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'multimeter_stopped'}}))
+
                 elif action == 'get_multimeter_data':
-                    asyncio.create_task(
-                        handle_get_multimeter_data(websocket, id(websocket))
-                    )
+                    asyncio.create_task(handle_get_multimeter_data(websocket, id(websocket)))
+
                 elif action == 'get_multimeter_history':
                     period = data.get('period', 'hour')
-                    asyncio.create_task(
-                        send_multimeter_history(websocket, period)
-                    )
+                    asyncio.create_task(send_multimeter_history(websocket, period))
+
                 elif action == 'get_oscilloscope_data':
-                    asyncio.create_task(
-                        handle_get_oscilloscope_data(websocket)
-                    )
+                    asyncio.create_task(handle_get_oscilloscope_data(websocket))
 
                 elif action == 'set_channel_settings':
                     channel = data.get('channel')
                     settings = data.get('settings', {})
                     if global_visualizer and channel and settings:
-                        result = global_visualizer.set_channel_settings(
-                            channel, settings
-                        )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    'type': 'channel_settings',
-                                    'channel': channel,
-                                    'settings': result,
-                                }
-                            )
-                        )
+                        result = global_visualizer.set_channel_settings(channel, settings)
+                        await websocket.send(json.dumps({'type': 'channel_settings', 'channel': channel, 'settings': result}))
 
             except json.JSONDecodeError:
                 pass
@@ -1653,6 +1722,7 @@ async def handle_websocket(websocket):
             del last_multimeter_values[id(websocket)]
         if websocket in active_websockets:
             active_websockets.remove(websocket)
+
 
 
 async def update_oscilloscope_data():
@@ -2332,6 +2402,8 @@ def move_working_tables_to_test(test_number):
     try:
         mult_table = f"мультиметр_{test_number}"
         osc_table = f"осциллограф_{test_number}"
+        uart_table = f"uart_{test_number}"
+
         multimeter_rows = session.execute(
             text("SELECT * FROM мультиметр")
         ).fetchall()
@@ -2352,6 +2424,7 @@ def move_working_tables_to_test(test_number):
                     'raw_data': json.dumps(row[7]) if row[7] else '{}',
                 },
             )
+
         oscilloscope_rows = session.execute(
             text("SELECT * FROM осциллограф")
         ).fetchall()
@@ -2370,11 +2443,33 @@ def move_working_tables_to_test(test_number):
                     'raw_data': json.dumps(row[5]) if row[5] else '{}',
                 },
             )
+
+        uart_rows = session.execute(text("SELECT * FROM uart")).fetchall()
+        for row in uart_rows:
+            insert_sql = f"""
+            INSERT INTO {uart_table} (timestamp, start_byte, command, status, payload_len, payload, crc_one, crc_two)
+            VALUES (:timestamp, :start_byte, :command, :status, :payload_len, :payload, :crc_one, :crc_two)
+            """
+            session.execute(
+                text(insert_sql),
+                {
+                    'timestamp': row[1],
+                    'start_byte': row[2],
+                    'command': row[3],
+                    'status': row[4],
+                    'payload_len': row[5],
+                    'payload': row[6],
+                    'crc_one': row[7],
+                    'crc_two': row[8],
+                },
+            )
+
         session.execute(text("DELETE FROM мультиметр"))
         session.execute(text("DELETE FROM осциллограф"))
+        session.execute(text("DELETE FROM uart"))
         session.commit()
         print(
-            f"Данные из рабочих таблиц перенесены в {mult_table} и {osc_table}, рабочие таблицы очищены."
+            f"Данные из рабочих таблиц перенесены в {mult_table}, {osc_table} и {uart_table}, рабочие таблицы очищены."
         )
     except Exception as e:
         session.rollback()
@@ -2382,6 +2477,43 @@ def move_working_tables_to_test(test_number):
         traceback.print_exc()
     finally:
         session.close()
+
+def process_uart_packet(packet_bytes):
+    try:
+        # packet_bytes — это байты полного пакета размером 64 (например)
+        # Распарсим поля согласно протоколу, пример:
+        start_byte = packet_bytes[0]
+        command = packet_bytes[1]
+        status = packet_bytes[2]
+        payload_len = packet_bytes[3]
+        payload = packet_bytes[4:62]  # 58 байт полезных данных
+        crc_one = packet_bytes[62]
+        crc_two = packet_bytes[63]
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        data = {
+            'timestamp': timestamp,
+            'start_byte': start_byte,
+            'command': command,
+            'status': status,
+            'payload_len': payload_len,
+            'payload': payload,
+            'crc_one': crc_one,
+            'crc_two': crc_two,
+        }
+
+        # Сохраняем в рабочую таблицу
+        save_uart_data(data)
+        # Если идет тест, сохраняем в соответствующую таблицу
+        if current_uart_table:
+            save_uart_data_to_test(data, current_uart_table)
+
+        print(f"UART пакет сохранен: CMD={command}, StartByte=0x{start_byte:02X}")
+
+    except Exception as e:
+        print(f"Ошибка обработки UART пакета: {e}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
