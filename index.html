@@ -615,10 +615,10 @@
                     <div class="external-tab-header">
                         <h3>Содержимое main.html</h3>
                         <div class="external-tab-actions">
-                            <button class="btn btn-sm btn-outline-info" onclick="refreshExternalContent('main.html', 'main-content')">
+                            <button class="btn btn-sm btn-outline-info" onclick="refreshExternalContent('frontend/main.html', 'main-content')">
                                 <i class="fas fa-sync"></i> Обновить
                             </button>
-                            <button class="btn btn-sm btn-outline-warning" onclick="openInNewTab('main.html')">
+                            <button class="btn btn-sm btn-outline-warning" onclick="openInNewTab('frontend/main.html')">
                                 <i class="fas fa-external-link-alt"></i> Открыть отдельно
                             </button>
                         </div>
@@ -637,10 +637,10 @@
                     <div class="external-tab-header">
                         <h3>Содержимое card.html</h3>
                         <div class="external-tab-actions">
-                            <button class="btn btn-sm btn-outline-info" onclick="refreshExternalContent('card.html', 'card-content')">
+                            <button class="btn btn-sm btn-outline-info" onclick="refreshExternalContent('frontend/card.html', 'card-content')">
                                 <i class="fas fa-sync"></i> Обновить
                             </button>
-                            <button class="btn btn-sm btn-outline-warning" onclick="openInNewTab('card.html')">
+                            <button class="btn btn-sm btn-outline-warning" onclick="openInNewTab('frontend/card.html')">
                                 <i class="fas fa-external-link-alt"></i> Открыть отдельно
                             </button>
                         </div>
@@ -658,22 +658,27 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Заглушка для устранения ошибки
+        function initCharts() {
+            console.log('initCharts initialized');
+            // Здесь должна быть ваша реализация инициализации графиков
+        }
+
         function loadExternalContent(file, targetId) {
             const targetElement = document.getElementById(targetId);
-            
+
             targetElement.innerHTML = `
                 <div class="external-tab-header">
-                    <div class="external-tab-actions">
-                    </div>
+                    <div class="external-tab-actions"></div>
                 </div>
-                <div class="loading-spinner">
+                <div class="loading-spinner d-flex align-items-center">
                     <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Загрузка...</span>
                     </div>
                     <span class="ms-3">Загрузка ${file}...</span>
                 </div>
             `;
-            
+
             setTimeout(() => {
                 targetElement.innerHTML = `
                     <iframe src="${file}" style="width:100%; height:calc(100% - 60px); border:none;"></iframe>
@@ -696,14 +701,14 @@
             mainTab.addEventListener('click', function() {
                 const mainContent = document.getElementById('main-content');
                 if (!mainContent.querySelector('iframe')) {
-                    loadExternalContent('main.html', 'main-content');
+                    loadExternalContent('frontend/main.html', 'main-content');
                 }
             });
             
             cardTab.addEventListener('click', function() {
                 const cardContent = document.getElementById('card-content');
                 if (!cardContent.querySelector('iframe')) {
-                    loadExternalContent('card.html', 'card-content');
+                    loadExternalContent('frontend/card.html', 'card-content');
                 }
             });
 
@@ -752,6 +757,11 @@
             });
         });
     </script>
-    <script src="app.js"></script>
+
+    <script src="frontend/src/app.js"></script>
+    <script src="frontend/src/oscilloscope.js"></script>
+    <script src="frontend/src/multimeter.js"></script>
+    <script src="frontend/src/lua.js"></script>
+
 </body>
 </html>

@@ -41,15 +41,15 @@ local function run_multimeter_test(params)
         return false
     end
     
-    print("Проверка наличия скрипта ut803_linux.py...")
-    local file = io.open("ut803_linux.py", "r")
+    print("Проверка наличия скрипта ut803.py...")
+    local file = io.open("bin/ut803.py", "r")
     if not file then
-        print("Ошибка: Файл ut803_linux.py не найден")
+        print("Ошибка: Файл ut803.py не найден")
         return false
     end
     file:close()
 
-    local cmd = string.format("python3 ut803_linux.py --measurement_time %d --force-save", params.measurement_time)
+    local cmd = string.format("python3 ut803.py --measurement_time %d --force-save", params.measurement_time)
     print("\nЗапуск теста мультиметра на " .. params.measurement_time .. " секунд...")
     print("Команда:", cmd)
     
@@ -73,12 +73,12 @@ io.stdout:setvbuf('no')
 local function run_parallel_tests()
     print("\n=== START PARALLEL TEST SCENARIO ===")
 
-    require "scenario"
+    require "contrib/scenario"
 
-    local osc_cmd = string.format("python3 -u test_rigol.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval_sec)
+    local osc_cmd = string.format("python3 -u bin/rigol_reader.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval_sec)
     local osc_handle = io.popen(osc_cmd)
 
-    local mult_cmd = string.format("python3 -u ut803_linux.py --measurement_time %d --force-save", global_mult_time_sec)
+    local mult_cmd = string.format("python3 -u bin/ut803.py --measurement_time %d --force-save", global_mult_time_sec)
     local mult_handle = io.popen(mult_cmd)
 
     local osc_count = 0
