@@ -8,7 +8,6 @@ import serial_asyncio
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-UART_PORT = '/dev/ttyUSB1'
 UART_BAUDRATE = 115200
 PACKET_SIZE = 64
 START_SEQ_TEMPATURE = bytes([0x01, 0x02, 0x03, 0x04])
