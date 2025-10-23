@@ -2,32 +2,23 @@
 import sys
 
 sys.stdout.reconfigure(line_buffering=True)
-import threading
-import pyvisa
-import numpy as np
-import json
-import time
-import locale
-import os
 import argparse
-import sqlite3
-import websockets
 import asyncio
-from datetime import datetime
+import base64
+import json
+import locale
+import threading
+import time
 import traceback
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    JSON,
-    Float,
-    String,
-    DateTime,
-    text,
-)
+from datetime import datetime
+
+import numpy as np
+import pyvisa
+import websockets
+from sqlalchemy import (JSON, Column, DateTime, Float, Integer, String,
+                        create_engine)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import base64
 
 if sys.platform.startswith('win'):
     locale.setlocale(locale.LC_ALL, 'Russian_Russia.UTF-8')

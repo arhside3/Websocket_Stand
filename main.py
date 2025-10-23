@@ -1,45 +1,81 @@
 import asyncio
-import websockets
+import concurrent.futures
 import json
-import numpy as np
-import threading
 import os
 import sys
-from sqlalchemy import (
-    text,
-)
+import threading
+import traceback
 from datetime import datetime
 from http.server import HTTPServer
-import traceback
-import time
-import serial
-import hid
+
+import websockets
 from serial.tools import list_ports
-import concurrent.futures
 
-from backend.measurement import *
-from backend.oscillocsope_visualizer import *
 from backend.http_methods import *
-from backend.setup_db import *
-from backend.run_lua import *
+from backend.measurement import *
 from backend.multimetrUT803 import *
+from backend.oscillocsope_visualizer import *
+from backend.run_lua import *
+from backend.send_websocket import send_to_all_websocket_clients
+from backend.settings import (HTTP_PORT, current_uart_data, global_multimeter,
+                              http_event_loop, is_measurement_active,
+                              is_multimeter_running, last_multimeter_values,
+                              multimeter_task, oscilloscope_task)
+from backend.setup_db import *
 
-WEBSOCKET_PORT = 8767
-HTTP_PORT = 8080
+active_websockets = set()
 
-global_multimeter = None
-last_multimeter_values = {}
-is_measurement_active = True
 
-is_multimeter_running = True
-oscilloscope_task = None
-multimeter_task = None
+def process_uart_packet(packet_bytes):
+    try:
+        start_byte = packet_bytes[0]
+        command = packet_bytes[1]
+        status = packet_bytes[2]
+        payload_len = packet_bytes[3]
+        payload = packet_bytes[4:62]
+        crc_one = packet_bytes[62]
+        crc_two = packet_bytes[63]
 
-current_test_number = None
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        data = {
+            'timestamp': timestamp,
+            'start_byte': start_byte,
+            'command': command,
+            'status': status,
+            'payload_len': payload_len,
+            'payload': payload,
+            'crc_one': crc_one,
+            'crc_two': crc_two,
+        }
+
+        save_uart_data(data)
+        if current_uart_table:
+            save_uart_data_to_test(data, current_uart_table)
+
+        print(
+            f"UART пакет сохранен: CMD={command}, StartByte=0x{start_byte:02X}"
+        )
+
+    except Exception as e:
+        print(f"Ошибка обработки UART пакета: {e}")
+        traceback.print_exc()
+
 
 async def handle_websocket(websocket):
     global global_multimeter, global_visualizer, is_measurement_active, is_oscilloscope_running, is_multimeter_running, oscilloscope_task, multimeter_task
     print("Клиент подключен к WebSocket")
+
+    active_websockets.add(websocket)
+
+    try:
+        await websocket.send(
+            json.dumps({'type': 'sensor_data', 'data': current_uart_data})
+        )
+        print(f"📤 Sent current UART data to new client: {current_uart_data}")
+    except Exception as e:
+        print(f"Error sending initial UART data: {e}")
+
     try:
         async for message in websocket:
             try:
@@ -55,9 +91,13 @@ async def handle_websocket(websocket):
                     print(f"Флаг force_save: {force_save}")
                     if force_save:
                         save_multimeter_data(data, force_save=True)
-                        print(f"Данные мультиметра сохранены (force_save): {data}")
+                        print(
+                            f"Данные мультиметра сохранены (force_save): {data}"
+                        )
 
-                    await send_to_all_websocket_clients({"type": "multimeter", "data": data})
+                    await send_to_all_websocket_clients(
+                        {"type": "multimeter", "data": data}
+                    )
                     continue
 
                 action = data.get('action')
@@ -68,7 +108,14 @@ async def handle_websocket(websocket):
 
                     test_number = start_new_test()
                     if test_number:
-                        await websocket.send(json.dumps({'type': 'test_started', 'test_number': test_number}))
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    'type': 'test_started',
+                                    'test_number': test_number,
+                                }
+                            )
+                        )
 
                     await run_lua_test_parallel_async(script_name, websocket)
 
@@ -79,7 +126,14 @@ async def handle_websocket(websocket):
                     if not global_multimeter:
                         global_multimeter = UT803Reader()
                         global_multimeter.connect_serial() or global_multimeter.connect_hid()
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'measurements_started'}}))
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'measurements_started'},
+                            }
+                        )
+                    )
 
                 elif action == 'stop_measurements':
                     is_measurement_active = False
@@ -87,11 +141,20 @@ async def handle_websocket(websocket):
                         try:
                             global_visualizer.oscilloscope.close()
                         except Exception as e:
-                            print(f"Ошибка при разрыве соединения с осциллографом: {e}")
+                            print(
+                                f"Ошибка при разрыве соединения с осциллографом: {e}"
+                            )
                         global_visualizer.oscilloscope = None
                         global_visualizer.connected = False
                         print("Соединение с осциллографом разорвано.")
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'measurements_stopped'}}))
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'measurements_stopped'},
+                            }
+                        )
+                    )
 
                 elif action == 'start_oscilloscope':
                     if not global_visualizer:
@@ -101,8 +164,17 @@ async def handle_websocket(websocket):
                     is_oscilloscope_running = True
                     if not oscilloscope_task or oscilloscope_task.done():
                         loop = asyncio.get_running_loop()
-                        oscilloscope_task = loop.create_task(run_oscilloscope())
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'oscilloscope_started'}}))
+                        oscilloscope_task = loop.create_task(
+                            run_oscilloscope()
+                        )
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'oscilloscope_started'},
+                            }
+                        )
+                    )
 
                 elif action == 'stop_oscilloscope':
                     is_oscilloscope_running = False
@@ -110,11 +182,20 @@ async def handle_websocket(websocket):
                         try:
                             global_visualizer.oscilloscope.close()
                         except Exception as e:
-                            print(f"Ошибка при разрыве соединения с осциллографом: {e}")
+                            print(
+                                f"Ошибка при разрыве соединения с осциллографом: {e}"
+                            )
                         global_visualizer.oscilloscope = None
                         global_visualizer.connected = False
                         print("Соединение с осциллографом разорвано.")
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'oscilloscope_stopped'}}))
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'oscilloscope_stopped'},
+                            }
+                        )
+                    )
 
                 elif action == 'start_multimeter':
                     if not global_multimeter:
@@ -124,7 +205,14 @@ async def handle_websocket(websocket):
                     if not multimeter_task or multimeter_task.done():
                         loop = asyncio.get_running_loop()
                         multimeter_task = loop.create_task(run_multimeter())
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'multimeter_started'}}))
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'multimeter_started'},
+                            }
+                        )
+                    )
 
                 elif action == 'stop_multimeter':
                     is_multimeter_running = False
@@ -132,24 +220,62 @@ async def handle_websocket(websocket):
                         try:
                             global_multimeter.disconnect()
                         except Exception as e:
-                            print(f"Ошибка при разрыве соединения с мультиметром: {e}")
+                            print(
+                                f"Ошибка при разрыве соединения с мультиметром: {e}"
+                            )
                         global_multimeter = None
                         print("Соединение с мультиметром разорвано.")
-                    await websocket.send(json.dumps({'type': 'status', 'data': {'status': 'multimeter_stopped'}}))
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                'type': 'status',
+                                'data': {'status': 'multimeter_stopped'},
+                            }
+                        )
+                    )
 
                 elif action == 'get_multimeter_data':
-                    asyncio.create_task(handle_get_multimeter_data(websocket, id(websocket)))
+                    asyncio.create_task(
+                        handle_get_multimeter_data(websocket, id(websocket))
+                    )
 
+                elif action == 'get_uart_data':
+                    try:
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    'type': 'sensor_data',
+                                    'data': current_uart_data,
+                                }
+                            )
+                        )
+                        print(
+                            f"Sent UART data on request: {current_uart_data}"
+                        )
+                    except Exception as e:
+                        print(f"Error sending UART data on request: {e}")
 
                 elif action == 'get_oscilloscope_data':
-                    asyncio.create_task(handle_get_oscilloscope_data(websocket))
+                    asyncio.create_task(
+                        handle_get_oscilloscope_data(websocket)
+                    )
 
                 elif action == 'set_channel_settings':
                     channel = data.get('channel')
                     settings = data.get('settings', {})
                     if global_visualizer and channel and settings:
-                        result = global_visualizer.set_channel_settings(channel, settings)
-                        await websocket.send(json.dumps({'type': 'channel_settings', 'channel': channel, 'settings': result}))
+                        result = global_visualizer.set_channel_settings(
+                            channel, settings
+                        )
+                        await websocket.send(
+                            json.dumps(
+                                {
+                                    'type': 'channel_settings',
+                                    'channel': channel,
+                                    'settings': result,
+                                }
+                            )
+                        )
 
             except json.JSONDecodeError:
                 pass
@@ -239,33 +365,9 @@ def run_http_server():
         traceback.print_exc()
 
 
-async def run_websocket_server():
-    print(f"WebSocket сервер запущен на ws://0.0.0.0:{WEBSOCKET_PORT}")
-    try:
-        async with websockets.serve(
-            handle_websocket,
-            '0.0.0.0',
-            WEBSOCKET_PORT,
-            ping_interval=None,
-            ping_timeout=None,
-            max_size=None,
-            max_queue=32,
-            compression=None,
-            origins=None,
-        ):
-            print(
-                "WebSocket сервер успешно запущен и готов принимать подключения"
-            )
-            await asyncio.Future()
-    except Exception as e:
-        print(f"Ошибка запуска WebSocket сервера: {e}")
-        traceback.print_exc()
-        raise
-
-
 async def main():
     """Main function to start the server"""
-    global is_multimeter_running, is_measurement_active
+    global is_multimeter_running, is_measurement_active, http_event_loop
 
     try:
         print("Initializing devices...")
@@ -340,30 +442,6 @@ async def main():
         sys.exit(1)
 
 
-async def send_to_all_websocket_clients(message):
-    global active_websockets
-    if active_websockets:
-        websockets_to_remove = []
-        send_tasks = []
-        for client in active_websockets:
-            try:
-                if hasattr(client, 'open') and client.open:
-                    send_task = asyncio.create_task(
-                        client.send(json.dumps(message))
-                    )
-                    send_tasks.append(send_task)
-                else:
-                    websockets_to_remove.append(client)
-            except Exception as e:
-                print(f"Ошибка отправки сообщения клиенту: {e}")
-                websockets_to_remove.append(client)
-        for client in websockets_to_remove:
-            if client in active_websockets:
-                active_websockets.remove(client)
-        if send_tasks:
-            await asyncio.wait(send_tasks, return_when=asyncio.ALL_COMPLETED)
-
-
 async def handle_get_multimeter_data(websocket, connection_id):
     global last_live_multimeter_data, last_multimeter_values
     if 'last_live_multimeter_data' in globals() and last_live_multimeter_data:
@@ -393,122 +471,6 @@ async def handle_get_oscilloscope_data(websocket):
         print(f"Ошибка в handle_get_oscilloscope_data: {e}")
 
 
-
-def move_working_tables_to_test(test_number):
-    session = Session()
-    try:
-        mult_table = f"мультиметр_{test_number}"
-        osc_table = f"осциллограф_{test_number}"
-        uart_table = f"uart_{test_number}"
-
-        multimeter_rows = session.execute(
-            text("SELECT * FROM мультиметр")
-        ).fetchall()
-        for row in multimeter_rows:
-            insert_sql = f"""
-            INSERT INTO {mult_table} (timestamp, value, unit, mode, range_str, measure_type, raw_data)
-            VALUES (:timestamp, :value, :unit, :mode, :range_str, :measure_type, :raw_data)
-            """
-            session.execute(
-                text(insert_sql),
-                {
-                    'timestamp': row[1],
-                    'value': row[2],
-                    'unit': row[3],
-                    'mode': row[4],
-                    'range_str': row[5],
-                    'measure_type': row[6],
-                    'raw_data': json.dumps(row[7]) if row[7] else '{}',
-                },
-            )
-
-        oscilloscope_rows = session.execute(
-            text("SELECT * FROM осциллограф")
-        ).fetchall()
-        for row in oscilloscope_rows:
-            insert_sql = f"""
-            INSERT INTO {osc_table} (timestamp, channel, time_data, voltage_data, raw_data)
-            VALUES (:timestamp, :channel, :time_data, :voltage_data, :raw_data)
-            """
-            session.execute(
-                text(insert_sql),
-                {
-                    'timestamp': row[1],
-                    'channel': row[2],
-                    'time_data': row[3],
-                    'voltage_data': row[4],
-                    'raw_data': json.dumps(row[5]) if row[5] else '{}',
-                },
-            )
-
-        uart_rows = session.execute(text("SELECT * FROM uart")).fetchall()
-        for row in uart_rows:
-            insert_sql = f"""
-            INSERT INTO {uart_table} (timestamp, start_byte, command, status, payload_len, payload, crc_one, crc_two)
-            VALUES (:timestamp, :start_byte, :command, :status, :payload_len, :payload, :crc_one, :crc_two)
-            """
-            session.execute(
-                text(insert_sql),
-                {
-                    'timestamp': row[1],
-                    'start_byte': row[2],
-                    'command': row[3],
-                    'status': row[4],
-                    'payload_len': row[5],
-                    'payload': row[6],
-                    'crc_one': row[7],
-                    'crc_two': row[8],
-                },
-            )
-
-        session.execute(text("DELETE FROM мультиметр"))
-        session.execute(text("DELETE FROM осциллограф"))
-        session.execute(text("DELETE FROM uart"))
-        session.commit()
-        print(
-            f"Данные из рабочих таблиц перенесены в {mult_table}, {osc_table} и {uart_table}, рабочие таблицы очищены."
-        )
-    except Exception as e:
-        session.rollback()
-        print(f"Ошибка при переносе данных из рабочих таблиц: {e}")
-        traceback.print_exc()
-    finally:
-        session.close()
-
-def process_uart_packet(packet_bytes):
-    try:
-        start_byte = packet_bytes[0]
-        command = packet_bytes[1]
-        status = packet_bytes[2]
-        payload_len = packet_bytes[3]
-        payload = packet_bytes[4:62]
-        crc_one = packet_bytes[62]
-        crc_two = packet_bytes[63]
-
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-
-        data = {
-            'timestamp': timestamp,
-            'start_byte': start_byte,
-            'command': command,
-            'status': status,
-            'payload_len': payload_len,
-            'payload': payload,
-            'crc_one': crc_one,
-            'crc_two': crc_two,
-        }
-
-        save_uart_data(data)
-        if current_uart_table:
-            save_uart_data_to_test(data, current_uart_table)
-
-        print(f"UART пакет сохранен: CMD={command}, StartByte=0x{start_byte:02X}")
-
-    except Exception as e:
-        print(f"Ошибка обработки UART пакета: {e}")
-        traceback.print_exc()
-
-
 if __name__ == "__main__":
     import argparse
 
@@ -523,7 +485,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--check-db',
         action='store_true',
-        help='Проверить структуру базы данных',
+        help='Проверить структуру базу данных',
     )
 
     args = parser.parse_args()
@@ -553,7 +515,7 @@ if __name__ == "__main__":
             print("Рекомендуется выполнить сброс: python3 main.py --reset-db")
         sys.exit(0)
 
-    if not os.path.exists('index.html'):
+    if not os.path.exists('frontend/index.html'):
         print("Предупреждение: файл index.html не найден!")
     if not os.path.exists('frontend/src/app.js'):
         print("Предупреждение: файл app.js не найден!")

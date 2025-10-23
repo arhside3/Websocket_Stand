@@ -2,18 +2,19 @@
 UT803 Multimeter Reader - Supports both HID and RS232 interfaces
 """
 
+import argparse
+import asyncio
+import json
+import logging
+import socket
+import sys
+import time
+from datetime import datetime
+from typing import Optional, Tuple
+
 import hid
 import serial
-import time
-import sys
-import logging
-import json
 import websockets
-import asyncio
-import argparse
-from typing import Optional, Tuple
-from datetime import datetime
-import socket
 
 logging.basicConfig(
     level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s'
@@ -171,20 +172,16 @@ class UT803Reader:
         Универсальный декодер: определяет формат (бинарный/ASCII) и парсит оба варианта.
         data: bytes или str
         """
-        # Если data - bytes и длина 11, пробуем бинарный протокол
         if isinstance(data, bytes) and len(data) == 11:
             return self._decode_binary_packet(data)
-        # Если data - str и длина 11, пробуем бинарный протокол
         if isinstance(data, str) and len(data) == 11:
             try:
                 b = bytes([ord(x) for x in data])
                 return self._decode_binary_packet(b)
             except Exception:
                 pass
-        # Если data - str и содержит ';', пробуем ASCII
         if isinstance(data, str) and ';' in data:
             return self._decode_ascii_protocol(data)
-        # Если data - bytes, пробуем декодировать в строку и парсить как ASCII
         if isinstance(data, bytes):
             try:
                 s = data.decode('ascii', errors='ignore').strip()
@@ -197,55 +194,52 @@ class UT803Reader:
     def _decode_binary_protocol(self, data: str) -> Tuple[dict, str]:
         """Decode 11-byte binary protocol packet"""
         try:
-            # Убираем CR+LF
             packet = data[:-2]
-            
+
             if len(packet) != 9:
                 return None, "Invalid packet length"
-            
-            # Разбираем пакет согласно протоколу
-            exponent = ord(packet[0]) - 48  # ASCII to value
+
+            exponent = ord(packet[0]) - 48
             base_value = int(packet[1:5])
             measurement_type = packet[5]
             flags = packet[6:9]
-            
+
             # Декодируем флаги
             flag1 = ord(flags[0]) - 48
             flag2 = ord(flags[1]) - 48
             flag3 = ord(flags[2]) - 48
-            
-            # Определяем тип измерения
-            measurement_info = self._get_measurement_type_info(measurement_type)
+
+            measurement_info = self._get_measurement_type_info(
+                measurement_type
+            )
             if not measurement_info:
                 return None, f"Unknown measurement type: {measurement_type}"
-            
-            # Вычисляем значение с учетом экспоненты и смещения
-            value = self._calculate_value(base_value, exponent, measurement_info['offset'])
-            
-            # Определяем единицы измерения и режим
+
+            value = self._calculate_value(
+                base_value, exponent, measurement_info['offset']
+            )
+
             unit = measurement_info['unit']
             mode = self._determine_mode(flag3, measurement_info)
             measure_type = measurement_info['type']
-            
-            # Проверяем флаги
+
             is_negative = (flag1 & 0x4) != 0
             is_overload = (flag1 & 0x1) != 0
             is_auto_range = (flag3 & 0x2) != 0
             is_ac = (flag3 & 0x4) != 0
             is_dc = (flag3 & 0x8) != 0
-            
+
             if is_negative:
                 value = -value
-            
+
             if is_overload:
                 value_str = "OL"
             else:
                 value_str = f"{value:.6f}".rstrip('0').rstrip('.')
-            
-            # Формируем JSON данные
+
             current_time = datetime.now()
             timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            
+
             json_data = {
                 'timestamp': timestamp,
                 'value': value_str,
@@ -263,17 +257,16 @@ class UT803Reader:
                     'is_overload': is_overload,
                     'is_auto_range': is_auto_range,
                     'is_ac': is_ac,
-                    'is_dc': is_dc
-                }
+                    'is_dc': is_dc,
+                },
             }
-            
-            # Формируем человекочитаемую строку
+
             human_readable = f"[{timestamp}] {value_str} {unit} {mode} {'AUTO' if is_auto_range else 'MANUAL'} [{measure_type}]"
             if is_overload:
                 human_readable = f"[{timestamp}] OL {unit} {mode} {'AUTO' if is_auto_range else 'MANUAL'} [{measure_type}]"
-            
+
             return json_data, human_readable
-            
+
         except Exception as e:
             logger.error(f"Error decoding binary protocol: {str(e)}")
             return None, f"Binary decode error: {str(e)}"
@@ -351,24 +344,30 @@ class UT803Reader:
             '1': {'type': 'Diode Test', 'unit': 'V', 'offset': 0},
             '2': {'type': 'Frequency', 'unit': 'Hz', 'offset': 0},
             '3': {'type': 'Resistance', 'unit': 'Ω', 'offset': 1},
-            '4': {'type': 'Temperature', 'unit': '°C', 'offset': 0},  # или °F в зависимости от флага
+            '4': {'type': 'Temperature', 'unit': '°C', 'offset': 0},
             '5': {'type': 'Continuity', 'unit': 'Ω', 'offset': 1},
             '6': {'type': 'Capacitance', 'unit': 'nF', 'offset': 12},
             '9': {'type': 'Current', 'unit': 'A', 'offset': 2},
-            ';': {'type': 'Voltage', 'unit': 'V', 'offset': 3},  # или 5 в зависимости от флага
+            ';': {'type': 'Voltage', 'unit': 'V', 'offset': 3},
             '=': {'type': 'Current', 'unit': 'µA', 'offset': 1},
             '|': {'type': 'hFE', 'unit': '', 'offset': 0},
-            '>': {'type': 'Current', 'unit': 'mA', 'offset': 2}
+            '>': {'type': 'Current', 'unit': 'mA', 'offset': 2},
         }
         return measurement_types.get(measurement_type)
 
-    def _calculate_value(self, base_value: int, exponent: int, offset: int, measurement_type=None):
+    def _calculate_value(
+        self,
+        base_value: int,
+        exponent: int,
+        offset: int,
+        measurement_type=None,
+    ):
         """Calculate actual value from base value and exponent with offset. Для nF (ёмкость) — base_value / 1000."""
         try:
-            if measurement_type == '6':  # Capacitance (nF)
+            if measurement_type == '6':
                 return base_value / 1000
             adjusted_exponent = exponent - offset
-            value = base_value * (10 ** adjusted_exponent)
+            value = base_value * (10**adjusted_exponent)
             return value
         except Exception as e:
             print(f"[Мультиметр] Error calculating value: {str(e)}")
@@ -377,6 +376,7 @@ class UT803Reader:
     def _decode_binary_packet(self, packet: bytes):
         if len(packet) != 11:
             return None, 'Invalid binary packet length'
+
         def sd(b):
             if 0x30 <= b <= 0x39:
                 return b - 0x30
@@ -386,8 +386,14 @@ class UT803Reader:
                 return b - 0x0A
             else:
                 return 0
+
         exponent = sd(packet[0])
-        base_value = sd(packet[1]) * 1000 + sd(packet[2]) * 100 + sd(packet[3]) * 10 + sd(packet[4])
+        base_value = (
+            sd(packet[1]) * 1000
+            + sd(packet[2]) * 100
+            + sd(packet[3]) * 10
+            + sd(packet[4])
+        )
         measurement_type = chr(packet[5]) if 32 <= packet[5] <= 127 else '?'
         flag1 = sd(packet[6])
         flag2 = sd(packet[7])
@@ -395,7 +401,14 @@ class UT803Reader:
         measurement_info = self._get_measurement_type_info(measurement_type)
         if not measurement_info:
             return None, f"Unknown measurement type: {measurement_type}"
-        value = self._calculate_value(base_value, exponent, measurement_info['offset'], measurement_type=packet[5] if isinstance(packet[5], str) else chr(packet[5]))
+        value = self._calculate_value(
+            base_value,
+            exponent,
+            measurement_info['offset'],
+            measurement_type=(
+                packet[5] if isinstance(packet[5], str) else chr(packet[5])
+            ),
+        )
         unit = measurement_info['unit']
         mode = self._determine_mode(flag3, measurement_info)
         measure_type = measurement_info['type']
@@ -411,6 +424,7 @@ class UT803Reader:
         else:
             value_str = f"{value:.6f}".rstrip('0').rstrip('.')
         from datetime import datetime
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         json_data = {
             'timestamp': timestamp,
@@ -429,8 +443,8 @@ class UT803Reader:
                 'is_overload': is_overload,
                 'is_auto_range': is_auto_range,
                 'is_ac': is_ac,
-                'is_dc': is_dc
-            }
+                'is_dc': is_dc,
+            },
         }
         human_readable = f"[{timestamp}] {value_str} {unit} {mode} {'AUTO' if is_auto_range else 'MANUAL'} [{measure_type}]"
         if is_overload:
@@ -441,14 +455,14 @@ class UT803Reader:
         """Determine measurement mode based on flags"""
         is_ac = (flag3 & 0x4) != 0
         is_dc = (flag3 & 0x8) != 0
-        
+
         if measurement_info['type'] == 'Voltage':
             if is_ac:
                 return 'AC'
             elif is_dc:
                 return 'DC'
             else:
-                return 'DC'  # По умолчанию
+                return 'DC'
         elif measurement_info['type'] == 'Current':
             if is_ac:
                 return 'AC'
@@ -457,11 +471,10 @@ class UT803Reader:
             else:
                 return 'DC'
         elif measurement_info['type'] == 'Temperature':
-            # Проверяем флаг для определения °F или °C
-            # FLAG_2_3 определяет единицы температуры
-            return '°C'  # По умолчанию, но может быть °F
+
+            return '°C'
         else:
-            return 'DC'  # Для остальных измерений
+            return 'DC'
 
     async def send_measurement(self, data: dict):
         """Send measurement data to WebSocket server"""
@@ -480,25 +493,29 @@ class UT803Reader:
             return None, None
         try:
             self.serial_port.reset_input_buffer()
-            # Читаем 11 байт (бинарный пакет)
             data = self.serial_port.read(11)
             if data and len(data) == 11:
                 json_data, human_readable = self.decode_ut803_data(data)
                 if json_data and json_data.get('value') == self.last_reading:
                     return None, None
-                self.last_reading = json_data.get('value') if json_data else None
+                self.last_reading = (
+                    json_data.get('value') if json_data else None
+                )
                 return json_data, human_readable
-            # Если не удалось, fallback на readline (ASCII)
             data = self.serial_port.readline()
             if data:
                 try:
                     decoded_data = data.decode('ascii').strip()
                 except Exception:
                     return None, None
-                json_data, human_readable = self.decode_ut803_data(decoded_data)
+                json_data, human_readable = self.decode_ut803_data(
+                    decoded_data
+                )
                 if json_data and json_data.get('value') == self.last_reading:
                     return None, None
-                self.last_reading = json_data.get('value') if json_data else None
+                self.last_reading = (
+                    json_data.get('value') if json_data else None
+                )
                 return json_data, human_readable
         except Exception as e:
             logger.error(f"Error reading from RS232: {str(e)}")
@@ -513,7 +530,9 @@ class UT803Reader:
                 json_data, human_readable = self.decode_ut803_data(bytes(data))
                 if json_data and json_data.get('value') == self.last_reading:
                     return None, None
-                self.last_reading = json_data.get('value') if json_data else None
+                self.last_reading = (
+                    json_data.get('value') if json_data else None
+                )
                 return json_data, human_readable
         except Exception as e:
             logger.error(f"Error reading from HID: {str(e)}")

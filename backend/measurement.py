@@ -1,15 +1,18 @@
+import traceback
+from datetime import datetime, timedelta
+
 import numpy as np
 from sqlalchemy import text
-from datetime import datetime, timedelta
-import traceback
-from backend.models import OscilloscopeData, MultimeterData
+
 from backend.engine import *
+from backend.models import MultimeterData, OscilloscopeData
 
 current_multimeter_table = None
 current_oscilloscope_table = None
 is_data_collection_active = False
 
 is_multimeter_collection_active = False
+
 
 class Measurement:
     def __init__(
@@ -26,6 +29,7 @@ class Measurement:
 
 def save_oscilloscope_data(data, force_save=False):
     from backend.setup_db import save_oscilloscope_data_to_test
+
     global is_data_collection_active, current_oscilloscope_table
     if not is_data_collection_active and not force_save:
         return True
@@ -69,6 +73,7 @@ def save_oscilloscope_data(data, force_save=False):
 
 def save_multimeter_data(data, force_save=False):
     from backend.setup_db import save_multimeter_data_to_test
+
     global is_multimeter_collection_active, current_multimeter_table
     if not is_multimeter_collection_active and not force_save:
         return True
@@ -113,7 +118,7 @@ def save_uart_data(data):
                 'command': data.get('command'),
                 'status': data.get('status'),
                 'payload_len': data.get('payload_len'),
-                'payload': data.get('payload'), 
+                'payload': data.get('payload'),
                 'crc_one': data.get('crc_one'),
                 'crc_two': data.get('crc_two'),
             },
@@ -128,6 +133,7 @@ def save_uart_data(data):
         return False
     finally:
         session.close()
+
 
 def get_oscilloscope_data_from_db(limit=100):
     session = Session()

@@ -1,13 +1,6 @@
-from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    JSON,
-    String,
-    LargeBinary,
-)
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import JSON, Column, Integer, LargeBinary, String
 from sqlalchemy.dialects.sqlite import JSON
+
 from backend.engine import *
 
 
@@ -31,6 +24,7 @@ class MultimeterData(Base):
     range_str = Column(String)
     measure_type = Column(String)
     raw_data = Column(JSON)
+
 
 class UARTData(Base):
     __tablename__ = 'uart'

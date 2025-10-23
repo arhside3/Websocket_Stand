@@ -1,14 +1,15 @@
 import json
-import numpy as np
+import locale
 import sys
+import traceback
+from datetime import datetime
+
+import numpy as np
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-import locale
-import traceback
 
-from backend.models import OscilloscopeData, MultimeterData
+from backend.models import MultimeterData, OscilloscopeData
 
 if sys.platform.startswith('win'):
     locale.setlocale(locale.LC_ALL, 'Russian_Russia.UTF-8')
@@ -33,8 +34,10 @@ def setup_database():
         print(f"Ошибка при создании рабочих таблиц: {e}")
         traceback.print_exc()
 
+
 setup_database()
 Session = sessionmaker(bind=engine)
+
 
 def get_next_test_number():
     session = Session()
@@ -47,7 +50,11 @@ def get_next_test_number():
         existing_tests = set()
         for row in result:
             name = row[0]
-            if name.startswith('мультиметр_') or name.startswith('осциллограф_') or name.startswith('uart_'):
+            if (
+                name.startswith('мультиметр_')
+                or name.startswith('осциллограф_')
+                or name.startswith('uart_')
+            ):
                 try:
                     number = int(name.split('_')[-1])
                     existing_tests.add(number)
@@ -62,6 +69,7 @@ def get_next_test_number():
         return 1
     finally:
         session.close()
+
 
 def create_uart_table(test_number):
     """Создаёт таблицу для данных UART нового испытания"""
@@ -141,7 +149,9 @@ def create_test_tables(test_number):
         session.execute(text(create_osc_sql))
         session.execute(text(create_uart_sql))
         session.commit()
-        print(f"Созданы таблицы испытания: {mult_table}, {osc_table}, {uart_table}")
+        print(
+            f"Созданы таблицы испытания: {mult_table}, {osc_table}, {uart_table}"
+        )
         return mult_table, osc_table, uart_table
     except Exception as e:
         session.rollback()
@@ -239,6 +249,7 @@ def save_multimeter_data_to_test(data, mult_table):
     finally:
         session.close()
 
+
 def save_uart_data_to_test(data, uart_table):
     if not uart_table:
         return False
@@ -279,10 +290,19 @@ def save_uart_data_to_test(data, uart_table):
 
 def start_new_test():
     from main import move_working_tables_to_test
+
     global current_test_number, current_multimeter_table, current_oscilloscope_table, current_uart_table
     current_test_number = get_next_test_number()
-    current_multimeter_table, current_oscilloscope_table, current_uart_table = create_test_tables(current_test_number)
-    if current_multimeter_table and current_oscilloscope_table and current_uart_table:
+    (
+        current_multimeter_table,
+        current_oscilloscope_table,
+        current_uart_table,
+    ) = create_test_tables(current_test_number)
+    if (
+        current_multimeter_table
+        and current_oscilloscope_table
+        and current_uart_table
+    ):
         print(f"Начато новое испытание #{current_test_number}")
         move_working_tables_to_test(current_test_number)
         return current_test_number
@@ -290,7 +310,9 @@ def start_new_test():
         print("Ошибка при создании таблиц испытания")
         return None
 
+
 current_uart_table = None
+
 
 def get_test_list():
     """Возвращает список всех испытаний"""

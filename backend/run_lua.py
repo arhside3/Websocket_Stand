@@ -1,15 +1,16 @@
 import asyncio
 import json
 import os
-import subprocess
-import signal
-from concurrent.futures import ProcessPoolExecutor
 import re
+import signal
+import subprocess
+from concurrent.futures import ProcessPoolExecutor
 
+from backend.http_methods import *
 from backend.measurement import *
 from backend.oscillocsope_visualizer import *
-from backend.http_methods import *
 from backend.setup_db import *
+
 
 def run_lua_script_sync(script_name: str) -> dict:
     """Synchronous version of run_lua_script that runs in a separate process"""

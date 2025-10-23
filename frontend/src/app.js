@@ -163,7 +163,6 @@ function startPeriodicUpdates() {
 function initCharts() {
     console.log('Инициализация графиков...');
 
-    // Инициализация графика осциллографа
     const oscilloCtxElement = document.getElementById('oscilloscopeChart');
     if (oscilloCtxElement) {
         const oscilloCtx = oscilloCtxElement.getContext('2d');
@@ -243,7 +242,6 @@ function initCharts() {
         console.warn('Элемент oscilloscopeChart не найден');
     }
 
-    // Инициализация графика мультиметра
     const multiCtxElement = document.getElementById('multimeterChart');
     if (multiCtxElement) {
         const multiCtx = multiCtxElement.getContext('2d');
@@ -259,10 +257,6 @@ function initCharts() {
     } else {
         console.warn('Элемент multimeterChart не найден');
     }
-
-    // Инициализация графиков истории осциллографа и мультиметра, без вызова функций загрузки истории
-    // Здесь просто создаются пустые графики, данные для них нужно загружать отдельной логикой,
-    // например по событию выбора вкладки
 
     const oscilloHistoryCtxElement = document.getElementById('oscilloHistoryChart');
     if (oscilloHistoryCtxElement) {
@@ -366,7 +360,6 @@ function initCharts() {
         console.warn('Элемент multimeterHistoryChart не найден');
     }
 
-    // Обработчики скрытия/показа каналов (опционально)
     for (let i = 1; i <= 4; i++) {
         const toggleElement = document.getElementById(`ch${i}Toggle`);
         if (toggleElement) {
@@ -379,22 +372,17 @@ function initCharts() {
         }
     }
 
-    // Добавьте обработчики вкладок, чтобы при переключении можно было загружать историю, без ошибочного вызова несуществующих функций
     const historyTab = document.getElementById('history-tab');
     if (historyTab) {
         historyTab.addEventListener('click', () => {
             console.log('Вкладка История активирована: здесь необходимо вызвать загрузку данных с сервера');
-            // Здесь вызывайте в вашем коде функции загрузки истории после их определения, например:
-            // loadOscilloscopeHistory();
-            // loadMultimeterHistory();
-            // Если эти функции не определены - их стоит добавить отдельно.
+
         });
     }
 
     const databaseTab = document.getElementById('database-tab');
     if (databaseTab) {
         databaseTab.addEventListener('click', () => {
-            // Загрузка данных базы при открытии вкладки
             loadDatabaseData();
         });
     }

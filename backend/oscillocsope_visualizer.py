@@ -1,13 +1,14 @@
 import asyncio
+import json
+import threading
+import time
+import traceback
+
 import numpy as np
 import pyvisa
-import threading
-import traceback
-import time
-import json
 
-from backend.models import OscilloscopeData
 from backend.engine import *
+from backend.models import OscilloscopeData
 
 oscilloscope_lock = threading.Lock()
 active_websockets = set()
@@ -387,6 +388,7 @@ def get_channel_history(channel_name, limit=20):
         return all_time, all_voltage
     finally:
         session.close()
+
 
 async def update_oscilloscope_data():
     try:
