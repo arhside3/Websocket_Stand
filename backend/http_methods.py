@@ -146,7 +146,7 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            print(f"📥 RECEIVED UART DATA VIA HTTP: {data}")
+            print(f"RECEIVED UART DATA VIA HTTP: {data}")
 
             if data.get('type') == 'sensor_data':
                 sensor_data = data.get('data', {})
