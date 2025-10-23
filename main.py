@@ -72,7 +72,7 @@ async def handle_websocket(websocket):
         await websocket.send(
             json.dumps({'type': 'sensor_data', 'data': current_uart_data})
         )
-        print(f"📤 Sent current UART data to new client: {current_uart_data}")
+        print(f"Sent current UART data to new client: {current_uart_data}")
     except Exception as e:
         print(f"Error sending initial UART data: {e}")
 
