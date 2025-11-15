@@ -68,6 +68,26 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_json_response(
                     get_multimeter_data_paginated(page=page, per_page=per_page)
                 )
+
+            elif path == '/db/uart':
+                from backend.setup_db import get_uart_data_paginated
+                
+                page = int(query.get('page', ['1'])[0])
+                per_page = int(query.get('per_page', ['50'])[0])
+                test_number = query.get('test_number', [None])[0]
+                data_type = query.get('data_type', [None])[0]
+                
+                if test_number:
+                    test_number = int(test_number)
+                
+                self.send_json_response(
+                    get_uart_data_paginated(
+                        page=page, 
+                        per_page=per_page, 
+                        test_number=test_number,
+                        data_type=data_type
+                    )
+                )
             elif path == '/history/oscilloscope':
                 from backend.measurement import get_oscilloscope_history
 
@@ -153,6 +173,13 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
 
                 global current_uart_data
                 current_uart_data.update(sensor_data)
+
+                try:
+                    from backend.setup_db import save_uart_sensor_data
+                    save_uart_sensor_data(sensor_data)
+                    print(f"UART sensor data saved to database: {sensor_data}")
+                except Exception as e:
+                    print(f"Error saving UART data to database: {e}")
 
                 global http_event_loop
                 if http_event_loop:

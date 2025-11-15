@@ -6,10 +6,10 @@ from datetime import datetime
 
 import numpy as np
 from sqlalchemy import create_engine, text
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-from backend.models import MultimeterData, OscilloscopeData
+from backend.engine import engine, Base, Session
+from backend.models import MultimeterData, OscilloscopeData, UARTData
 
 if sys.platform.startswith('win'):
     locale.setlocale(locale.LC_ALL, 'Russian_Russia.UTF-8')
@@ -18,25 +18,28 @@ if sys.platform.startswith('win'):
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
-DATABASE_URL = 'sqlite:///my_database.db'
-
-
-engine = create_engine(DATABASE_URL, echo=False)
-Base = declarative_base()
-
-
 def setup_database():
     print("Проверка и создание рабочих таблиц базы данных...")
     try:
         Base.metadata.create_all(engine)
+        
+        session = Session()
+        result = session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+        tables = [row[0] for row in result]
+        session.close()
+        
+        print("Созданные таблицы:")
+        for table in tables:
+            print(f"  - {table}")
+            
         print("Рабочие таблицы базы данных готовы")
+        return True
     except Exception as e:
         print(f"Ошибка при создании рабочих таблиц: {e}")
         traceback.print_exc()
+        return False
 
-
-setup_database()
-Session = sessionmaker(bind=engine)
+database_initialized = setup_database()
 
 
 def get_next_test_number():
@@ -135,13 +138,23 @@ def create_test_tables(test_number):
         CREATE TABLE IF NOT EXISTS {uart_table} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
-            start_byte INTEGER,
+            temp600_1 REAL,
+            temp600_2 REAL,
+            tempNormal1 REAL,
+            tempNormal2 REAL,
+            thrust1 REAL,
+            gauge_id TEXT,
+            calibration_value REAL,
             command INTEGER,
+            start_byte INTEGER,
             status INTEGER,
             payload_len INTEGER,
             payload BLOB,
             crc_one INTEGER,
-            crc_two INTEGER
+            crc_two INTEGER,
+            data_type TEXT,
+            raw_data JSON,
+            test_number INTEGER
         )
         """
 
@@ -149,9 +162,7 @@ def create_test_tables(test_number):
         session.execute(text(create_osc_sql))
         session.execute(text(create_uart_sql))
         session.commit()
-        print(
-            f"Созданы таблицы испытания: {mult_table}, {osc_table}, {uart_table}"
-        )
+        print(f"Созданы таблицы испытания: {mult_table}, {osc_table}, {uart_table}")
         return mult_table, osc_table, uart_table
     except Exception as e:
         session.rollback()
@@ -271,7 +282,7 @@ def save_uart_data_to_test(data, uart_table):
                 'command': data.get('command'),
                 'status': data.get('status'),
                 'payload_len': data.get('payload_len'),
-                'payload': data.get('payload'),  # bytes
+                'payload': data.get('payload'),
                 'crc_one': data.get('crc_one'),
                 'crc_two': data.get('crc_two'),
             },
@@ -600,6 +611,230 @@ def get_multimeter_data_paginated(page=1, per_page=50, test_number=None):
         }
     except Exception as e:
         print(f"Ошибка получения данных мультиметра с пагинацией: {e}")
+        traceback.print_exc()
+        return {
+            'data': [],
+            'total': 0,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': 1,
+        }
+    finally:
+        session.close()
+
+def save_uart_sensor_data(sensor_data, test_number=None):
+    """Сохраняет данные датчиков UART в основную таблицу"""
+    session = Session()
+    try:
+        db_record = UARTData(
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            temp600_1=sensor_data.get('temp600_1'),
+            temp600_2=sensor_data.get('temp600_2'),
+            tempNormal1=sensor_data.get('tempNormal1'),
+            tempNormal2=sensor_data.get('tempNormal2'),
+            thrust1=sensor_data.get('thrust1'),
+            data_type='sensor_data',
+            raw_data=sensor_data,
+            test_number=test_number
+        )
+        session.add(db_record)
+        session.commit()
+        print(f"Данные датчиков UART сохранены: {sensor_data}")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения данных датчиков UART: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
+
+def save_uart_calibration_data(gauge_id, value, command=0x3D, test_number=None):
+    """Сохраняет данные калибровки UART"""
+    session = Session()
+    try:
+        db_record = UARTData(
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            gauge_id=gauge_id,
+            calibration_value=value,
+            command=command,
+            data_type='calibration',
+            raw_data={'gauge_id': gauge_id, 'value': value, 'command': command},
+            test_number=test_number
+        )
+        session.add(db_record)
+        session.commit()
+        print(f"Данные калибровки UART сохранены: {gauge_id}={value}")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения данных калибровки UART: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
+
+def save_uart_raw_packet(data, test_number=None):
+    """Сохраняет сырые данные UART пакета"""
+    session = Session()
+    try:
+        db_record = UARTData(
+            timestamp=data.get('timestamp', ''),
+            start_byte=data.get('start_byte'),
+            command=data.get('command'),
+            status=data.get('status'),
+            payload_len=data.get('payload_len'),
+            payload=data.get('payload'),
+            crc_one=data.get('crc_one'),
+            crc_two=data.get('crc_two'),
+            data_type='raw_packet',
+            raw_data=data,
+            test_number=test_number
+        )
+        session.add(db_record)
+        session.commit()
+        print(f"Сырые данные UART пакета сохранены: CMD={data.get('command')}")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения сырых данных UART: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
+
+def save_uart_sensor_data_to_test(sensor_data, uart_table):
+    """Сохраняет данные датчиков UART в таблицу испытания"""
+    if not uart_table:
+        return False
+    session = Session()
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        insert_sql = f"""
+        INSERT INTO {uart_table} (
+            timestamp, temp600_1, temp600_2, tempNormal1, tempNormal2, thrust1, 
+            data_type, raw_data
+        )
+        VALUES (
+            :timestamp, :temp600_1, :temp600_2, :tempNormal1, :tempNormal2, :thrust1,
+            :data_type, :raw_data
+        )
+        """
+        session.execute(
+            text(insert_sql),
+            {
+                'timestamp': timestamp,
+                'temp600_1': sensor_data.get('temp600_1'),
+                'temp600_2': sensor_data.get('temp600_2'),
+                'tempNormal1': sensor_data.get('tempNormal1'),
+                'tempNormal2': sensor_data.get('tempNormal2'),
+                'thrust1': sensor_data.get('thrust1'),
+                'data_type': 'sensor_data',
+                'raw_data': json.dumps(sensor_data),
+            },
+        )
+        session.commit()
+        print(f"Данные датчиков UART сохранены в таблицу испытания: {uart_table}")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"Ошибка сохранения данных датчиков UART в таблицу испытания: {e}")
+        traceback.print_exc()
+        return False
+    finally:
+        session.close()
+
+def get_uart_data_paginated(page=1, per_page=50, test_number=None, data_type=None):
+    """Получает данные UART с пагинацией"""
+    session = Session()
+    try:
+        if test_number is None:
+            query = session.query(UARTData)
+            if data_type:
+                query = query.filter(UARTData.data_type == data_type)
+            
+            total = query.count()
+            results = (
+                query.order_by(UARTData.id.desc())
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+                .all()
+            )
+            
+            data = []
+            for row in results:
+                item = {
+                    'id': row.id,
+                    'timestamp': row.timestamp,
+                    'data_type': row.data_type,
+                    'temp600_1': row.temp600_1,
+                    'temp600_2': row.temp600_2,
+                    'tempNormal1': row.tempNormal1,
+                    'tempNormal2': row.tempNormal2,
+                    'thrust1': row.thrust1,
+                    'gauge_id': row.gauge_id,
+                    'calibration_value': row.calibration_value,
+                    'command': row.command,
+                    'raw_data': row.raw_data,
+                    'test_number': row.test_number
+                }
+                data.append(item)
+        else:
+            table = f"uart_{test_number}"
+            offset = (page - 1) * per_page
+            
+            base_sql = f"SELECT * FROM {table}"
+            count_sql = f"SELECT COUNT(*) FROM {table}"
+            
+            if data_type:
+                base_sql += f" WHERE data_type = '{data_type}'"
+                count_sql += f" WHERE data_type = '{data_type}'"
+            
+            base_sql += " ORDER BY id DESC LIMIT :limit OFFSET :offset"
+            
+            total_result = session.execute(text(count_sql))
+            total = total_result.fetchone()[0]
+            
+            result = session.execute(
+                text(base_sql),
+                {'limit': per_page, 'offset': offset}
+            )
+            
+            data = []
+            for row in result:
+                raw_data = json.loads(row[17]) if row[17] else {}
+                item = {
+                    'id': row[0],
+                    'timestamp': row[1],
+                    'temp600_1': row[2],
+                    'temp600_2': row[3],
+                    'tempNormal1': row[4],
+                    'tempNormal2': row[5],
+                    'thrust1': row[6],
+                    'gauge_id': row[7],
+                    'calibration_value': row[8],
+                    'command': row[9],
+                    'start_byte': row[10],
+                    'status': row[11],
+                    'payload_len': row[12],
+                    'payload': row[13],
+                    'crc_one': row[14],
+                    'crc_two': row[15],
+                    'data_type': row[16],
+                    'raw_data': raw_data,
+                    'test_number': row[18]
+                }
+                data.append(item)
+        
+        return {
+            'data': data,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': max(1, (total + per_page - 1) // per_page),
+        }
+    except Exception as e:
+        print(f"Ошибка получения данных UART с пагинацией: {e}")
         traceback.print_exc()
         return {
             'data': [],

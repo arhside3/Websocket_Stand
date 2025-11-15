@@ -73,12 +73,12 @@ io.stdout:setvbuf('no')
 local function run_parallel_tests()
     print("\n=== START PARALLEL TEST SCENARIO ===")
 
-    require "contrib/scenario"
+    require "scenario"
 
-    local osc_cmd = string.format("python3 -u bin/rigol_reader.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval_sec)
+    local osc_cmd = string.format("python3 -u ../bin/rigol_reader.py --samples %d --interval %.2f --force-save", global_osc_samples, global_osc_interval_sec)
     local osc_handle = io.popen(osc_cmd)
 
-    local mult_cmd = string.format("python3 -u bin/ut803.py --measurement_time %d --force-save", global_mult_time_sec)
+    local mult_cmd = string.format("python3 -u ../bin/ut803.py --measurement_time %d --force-save", global_mult_time_sec)
     local mult_handle = io.popen(mult_cmd)
 
     local osc_count = 0

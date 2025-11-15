@@ -1,10 +1,13 @@
+# uart.py
 import asyncio
 import os
 import struct
 import sys
-
+import json
 import requests
 import serial_asyncio
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,6 +17,45 @@ START_SEQ_TEMPATURE = bytes([0x01, 0x02, 0x03, 0x04])
 START_SEQ_HIGH_TEMPATURE = bytes([0x03, 0x03, 0x03, 0x03])
 START_SEQ_TRACTION = bytes([0x05, 0x02, 0x03, 0x04])
 
+protocol_instance = None
+
+class UARTCommandHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == '/send_calibration':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode())
+            
+            value = data.get('value')
+            command = data.get('command', 0x3D)
+            
+            print(f"Received calibration command via HTTP: value={value}, command=0x{command:02X}")
+            
+            packet = build_uart_packet_sent_calibration_value(command, value)
+            
+            global protocol_instance
+            if protocol_instance:
+                protocol_instance.send(packet)
+                print(f"Sent calibration packet via HTTP command: value={value}")
+            else:
+                print("Protocol instance not available")
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            response = json.dumps({'status': 'success', 'value': value})
+            self.wfile.write(response.encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        pass
+
+def run_http_server():
+    server = HTTPServer(('localhost', 9999), UARTCommandHandler)
+    print("UART HTTP server started on port 9999")
+    server.serve_forever()
 
 def send_uart_data_via_http(sensor_data):
     """Отправляет UART данные через HTTP на main.py"""
@@ -27,7 +69,6 @@ def send_uart_data_via_http(sensor_data):
     except Exception as e:
         print(f"HTTP send error: {e}")
 
-
 def calc_crc16(data: bytes) -> int:
     crc = 0xFFFF
     for b in data:
@@ -40,10 +81,7 @@ def calc_crc16(data: bytes) -> int:
             crc &= 0xFFFF
     return crc
 
-
-def decode_high_temperature_payload(
-    payload: bytes, command: int
-) -> tuple[float, float]:
+def decode_high_temperature_payload(payload: bytes, command: int) -> tuple[float, float]:
     try:
         high_temp1 = struct.unpack('<f', bytes(payload[0:4]))[0]
         high_temp2 = struct.unpack('<f', bytes(payload[4:8]))[0]
@@ -52,10 +90,7 @@ def decode_high_temperature_payload(
         print(f"Error decoding high temperature: {e}")
         return 0.0, 0.0
 
-
-def decode_temperature_payload(
-    payload: bytes, command: int
-) -> tuple[float, float]:
+def decode_temperature_payload(payload: bytes, command: int) -> tuple[float, float]:
     try:
         temp1 = payload[0] | (payload[1] << 8)
         temp2 = payload[2] | (payload[3] << 8)
@@ -63,7 +98,6 @@ def decode_temperature_payload(
     except Exception as e:
         print(f"Error decoding temperature: {e}")
         return 0.0, 0.0
-
 
 def decode_traction_payload(payload: bytes, command: int) -> float:
     try:
@@ -73,7 +107,6 @@ def decode_traction_payload(payload: bytes, command: int) -> float:
         print(f"Error decoding traction: {e}")
         return 0.0
 
-
 class UARTProtocol(asyncio.Protocol):
     def __init__(self):
         self.buffer = bytearray()
@@ -81,6 +114,9 @@ class UARTProtocol(asyncio.Protocol):
         self.connection_ready = asyncio.Event()
         self.waiting_for_packet = False
         self.expected_packet_start = None
+        
+        global protocol_instance
+        protocol_instance = self
 
     def connection_made(self, transport):
         self.transport = transport
@@ -116,15 +152,10 @@ class UARTProtocol(asyncio.Protocol):
 
         if not positions:
             if len(self.buffer) > 64:
-                print(
-                    f"No start sequence found. Discarding first 10 bytes. Sample: {self.buffer[:10].hex()}"
-                )
+                print(f"No start sequence found. Discarding first 10 bytes. Sample: {self.buffer[:10].hex()}")
                 del self.buffer[:10]
             else:
-                print(
-                    "No start sequence found. Clearing buffer",
-                    self.buffer.hex(),
-                )
+                print("No start sequence found. Clearing buffer", self.buffer.hex())
                 self.buffer.clear()
             return False
 
@@ -151,16 +182,12 @@ class UARTProtocol(asyncio.Protocol):
             del self.buffer[:PACKET_SIZE]
             command = packet[4]
             payload_len = packet[6]
-            print(
-                f"Valid packet received - Command: 0x{command:02X}, Payload length: {payload_len}, Raw: {packet.hex()}"
-            )
+            print(f"Valid packet received - Command: 0x{command:02X}, Payload length: {payload_len}, Raw: {packet.hex()}")
 
             sensor_data = {}
 
             if self.expected_packet_start == START_SEQ_TEMPATURE:
-                temp1, temp2 = decode_temperature_payload(
-                    packet[7 : 7 + 55], command
-                )
+                temp1, temp2 = decode_temperature_payload(packet[7 : 7 + 55], command)
                 sensor_data['tempNormal1'] = temp1
                 sensor_data['tempNormal2'] = temp2
                 print(f"Decoded temperatures: temp1={temp1}, temp2={temp2}")
@@ -171,14 +198,10 @@ class UARTProtocol(asyncio.Protocol):
                 print(f"Decoded weight: weight={weight}")
 
             elif self.expected_packet_start == START_SEQ_HIGH_TEMPATURE:
-                high_temp1, high_temp2 = decode_high_temperature_payload(
-                    packet[7 : 7 + 55], command
-                )
+                high_temp1, high_temp2 = decode_high_temperature_payload(packet[7 : 7 + 55], command)
                 sensor_data['temp600_1'] = high_temp1
                 sensor_data['temp600_2'] = high_temp2
-                print(
-                    f"Decoded high temperatures: high_temp1={high_temp1}, high_temp2={high_temp2}"
-                )
+                print(f"Decoded high temperatures: high_temp1={high_temp1}, high_temp2={high_temp2}")
 
             try:
                 send_uart_data_via_http(sensor_data)
@@ -191,9 +214,7 @@ class UARTProtocol(asyncio.Protocol):
             if len(self.buffer) > 0:
                 self._find_start_sequence()
         else:
-            print(
-                f"Invalid CRC (got {recv_crc:04X}, calc {calc_crc:04X}), discarding one byte"
-            )
+            print(f"Invalid CRC (got {recv_crc:04X}, calc {calc_crc:04X}), discarding one byte")
             del self.buffer[0]
             self.waiting_for_packet = False
             self.expected_packet_start = None
@@ -205,7 +226,6 @@ class UARTProtocol(asyncio.Protocol):
             print(f"Sent {len(data)} bytes: {data.hex()}")
         else:
             print("UART transport not connected")
-
 
 def build_uart_packet_temprature(command: int) -> bytes:
     DATA_PAYLOAD = 55
@@ -229,7 +249,6 @@ def build_uart_packet_temprature(command: int) -> bytes:
     )
     return packet
 
-
 def build_uart_packet_traction(command: int) -> bytes:
     DATA_PAYLOAD = 55
     RESP_OK = 0x00
@@ -251,7 +270,6 @@ def build_uart_packet_traction(command: int) -> bytes:
         crc_lo,
     )
     return packet
-
 
 def build_uart_packet_high_temprature(command: int) -> bytes:
     DATA_PAYLOAD = 55
@@ -275,9 +293,54 @@ def build_uart_packet_high_temprature(command: int) -> bytes:
     )
     return packet
 
+def build_uart_packet_get_calibration_value(command: int) -> bytes:
+    DATA_PAYLOAD = 55
+    RESP_OK = 0x00
+
+    payload = bytes([0] * DATA_PAYLOAD)
+    buffer_crc = bytes([command, RESP_OK, 0]) + payload
+    crc_val = calc_crc16(buffer_crc)
+    crc_hi = (crc_val >> 8) & 0xFF
+    crc_lo = crc_val & 0xFF
+
+    packet = struct.pack(
+        f'>4sBBB{DATA_PAYLOAD}sBB',
+        START_SEQ_TRACTION,
+        command,
+        RESP_OK,
+        0,
+        payload,
+        crc_hi,
+        crc_lo,
+    )
+    return packet
+
+def build_uart_packet_sent_calibration_value(command: int, value: int) -> bytes:
+    """Строит UART пакет с калибровочным значением"""
+    DATA_PAYLOAD = 55
+    RESP_OK = 0x00
+
+    number = struct.pack('>I', value) + bytes(DATA_PAYLOAD - 4)
+    buffer_crc = bytes([command, RESP_OK, 0]) + number
+    crc_val = calc_crc16(buffer_crc)
+    crc_hi = (crc_val >> 8) & 0xFF
+    crc_lo = crc_val & 0xFF
+
+    packet = struct.pack(
+        f'>4sBBB{DATA_PAYLOAD}sBB',
+        START_SEQ_TRACTION,
+        command,
+        RESP_OK,
+        0,
+        number,
+        crc_hi,
+        crc_lo,
+    )
+    
+    print(f"Built calibration packet with command 0x{command:02X} and value: {value}")
+    return packet
 
 async def uart_reader():
-
     loop = asyncio.get_running_loop()
     protocol_instance = UARTProtocol()
     ports = ['/dev/ttyUSB1', '/dev/ttyUSB0']
@@ -288,35 +351,49 @@ async def uart_reader():
             )
             return protocol_instance
         except:
-            print('')
-
+            print(f'Failed to connect to {port}')
+    return None
 
 async def periodic_send(protocol: UARTProtocol):
     await protocol.connection_ready.wait()
     print("Starting periodic UART send")
 
-    protocol.send(build_uart_packet_temprature(0x3A))
-    await asyncio.sleep(5)
+    print('GET Calibration Value')
+    protocol.send(build_uart_packet_get_calibration_value(0x3C))
+    await asyncio.sleep(2)
+    
+    print('Calibration values will be sent on demand via WebSocket')
+    
+    print('GET Calibration Value2')
+    protocol.send(build_uart_packet_get_calibration_value(0x3C))
+    await asyncio.sleep(2)
 
     while True:
         try:
-            protocol.send(build_uart_packet_temprature(0x3B))
             print('Temperature')
-            await asyncio.sleep(0,1)
-            protocol.send(build_uart_packet_traction(0x3B))
+            protocol.send(build_uart_packet_temprature(0x3B))
+            await asyncio.sleep(0.1)
             print('Traction')
-            await asyncio.sleep(0,5)
-            protocol.send(build_uart_packet_high_temprature(0x3B))
+            protocol.send(build_uart_packet_traction(0x3B))
+            await asyncio.sleep(0.5)
             print('High_Temperature')
+            protocol.send(build_uart_packet_high_temprature(0x3B))
             await asyncio.sleep(1)
         except asyncio.CancelledError:
             print("Periodic send cancelled")
             break
 
-
 async def main():
     try:
+        http_thread = threading.Thread(target=run_http_server, daemon=True)
+        http_thread.start()
+        print("UART HTTP server thread started")
+        
         protocol = await uart_reader()
+        if protocol is None:
+            print("Failed to connect to any UART port")
+            return
+            
         sender_task = asyncio.create_task(periodic_send(protocol))
 
         await sender_task
@@ -333,7 +410,6 @@ async def main():
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_when=asyncio.ALL_COMPLETED)
-
 
 if __name__ == '__main__':
     try:

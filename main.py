@@ -8,6 +8,7 @@ import traceback
 from datetime import datetime
 from http.server import HTTPServer
 
+import requests
 import websockets
 from serial.tools import list_ports
 
@@ -61,6 +62,20 @@ def process_uart_packet(packet_bytes):
         print(f"Ошибка обработки UART пакета: {e}")
         traceback.print_exc()
 
+async def send_calibration_value_to_uart(value):
+    """Отправляет калибровочное значение в UART модуль через HTTP"""
+    try:
+        response = requests.post(
+            'http://localhost:9999/send_calibration',
+            json={'value': value, 'command': 0x3D},
+            timeout=5
+        )
+        if response.status_code == 200:
+            print(f"Calibration value {value} sent to UART via HTTP")
+        else:
+            print(f"Failed to send calibration value: {response.status_code}")
+    except Exception as e:
+        print(f"Error sending calibration value via HTTP: {e}")
 
 async def handle_websocket(websocket):
     global global_multimeter, global_visualizer, is_measurement_active, is_oscilloscope_running, is_multimeter_running, oscilloscope_task, multimeter_task
@@ -276,6 +291,32 @@ async def handle_websocket(websocket):
                                 }
                             )
                         )
+
+                elif action == 'set_calibration_value':
+                    gauge_id = data.get('gaugeId')
+                    value = data.get('value')
+                    
+                    if gauge_id and value is not None:
+                        print(f"Received calibration value for {gauge_id}: {value}")
+                        
+                        try:
+                            from backend.setup_db import save_uart_calibration_data
+                            save_uart_calibration_data(gauge_id, value)
+                            print(f"Calibration data saved to database: {gauge_id}={value}")
+                        except Exception as e:
+                            print(f"Error saving calibration data to database: {e}")
+                        
+                        await send_calibration_value_to_uart(value)
+                        
+                        await websocket.send(json.dumps({
+                            'type': 'calibration_status',
+                            'data': {
+                                'status': 'success', 
+                                'gaugeId': gauge_id,
+                                'value': value,
+                                'message': 'Calibration value saved and sent to device via 0x3D'
+                            }
+                        }))
 
             except json.JSONDecodeError:
                 pass

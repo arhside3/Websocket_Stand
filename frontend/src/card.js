@@ -169,7 +169,7 @@ class SvgGauge {
     };
   }
 
-  _updateNeedle(value) {
+ _updateNeedle(value) {
     if (value < this.minValue) value = this.minValue;
     if (value > this.maxValue) value = this.maxValue;
     this.value = value;
@@ -223,40 +223,72 @@ function createGaugeWithIcon(containerId, options) {
   options.iconPath = options.iconPath || icons.rpm;
   const container = document.createElement('div');
   document.getElementById('dashboard').appendChild(container);
-  return new SvgGauge(container, options);
+  
+  const gaugeInstance = new SvgGauge(container, options);
+  
+  const inputContainer = document.createElement('div');
+  inputContainer.className = 'gauge-input-container';
+  inputContainer.style.cssText = `
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-top: 10px;
+    gap: 5px;
+  `;
+  
+  const label = document.createElement('label');
+  label.textContent = 'Значение:';
+  label.style.cssText = `
+    color: #e0f7fa;
+    font-size: 12px;
+    font-family: Arial, sans-serif;
+  `;
+  
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.id = `${containerId}_input`;
+  input.name = `${containerId}_value`;
+  input.required = true;
+  input.size = 10;
+  input.style.cssText = `
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 3px;
+    color: #e0f7fa;
+    padding: 2px 5px;
+    font-size: 12px;
+  `;
+  
+  input.addEventListener('change', function() {
+    const value = parseFloat(this.value);
+    if (!isNaN(value)) {
+      gaugeInstance.setValue(value);
+      
+      if (isConnected && ws.readyState === WebSocket.OPEN) {
+        const message = {
+          action: 'set_calibration_value',
+          gaugeId: containerId,
+          value: value
+        };
+        ws.send(JSON.stringify(message));
+        console.log(`Sent calibration value for ${containerId}: ${value}`);
+      }
+    }
+  });
+  
+  inputContainer.appendChild(label);
+  inputContainer.appendChild(input);
+  container.appendChild(inputContainer);
+  
+  return gaugeInstance;
 }
-
-// // Создаем все датчики
-// const rpmGauge = createGaugeWithIcon('rpmGauge', {
-//   minValue: 0, maxValue: 8000, unit: 'об/мин', tickCount: 16,
-//   dangerThreshold: 6500, warningThreshold: 5000,
-//   colors: { primary:'#448aff', danger:'#ff5252', warning:'#ffb142', success:'#4caf50', text:'#e0f7fa' },
-//   title: 'Обороты двигателя',
-//   iconPath: icons.rpm
-// });
-
-// const advanceGauge = createGaugeWithIcon('advanceGauge', {
-//   minValue: 0, maxValue: 40, unit: 'град.', tickCount: 10,
-//   dangerThreshold: 32, warningThreshold: 28,
-//   colors: { primary:'#00bcd4', danger:'#ff5252', warning:'#ffb142', success:'#4caf50', text:'#e0f7fa' },
-//   title: 'Угол опережения',
-//   iconPath: icons.temperature
-// });
-
-// const dross = createGaugeWithIcon('drossGauge', {
-//   minValue: 0, maxValue: 100, unit: '%', tickCount: 10,
-//   dangerThreshold: 90, warningThreshold: 75,
-//   colors: { primary:'#66bb6a', danger:'#d32f2f', warning:'#fbc02d', success:'#388e3c', text:'#e0f7fa' },
-//   title: 'Положение дросселя',
-//   iconPath: icons.thrust
-// });
 
 const thrust1 = createGaugeWithIcon('thrustGauge1', {
   minValue: 0, maxValue: 100, unit: 'кг', tickCount: 10,
   dangerThreshold: 90, warningThreshold: 75,
   colors: { primary:'#66bb6a', danger:'#d32f2f', warning:'#fbc02d', success:'#388e3c', text:'#e0f7fa' },
   title: 'Тяга',
-  iconPath: icons.thrust
+  iconPath: icons.thrust, 
 });
 
 const temp600_1 = createGaugeWithIcon('temp600Gauge1', {
@@ -290,38 +322,6 @@ const tempNormal2 = createGaugeWithIcon('tempNormalGauge2', {
   title: 'Температура нормал 2',
   iconPath: icons.temperature
 });
-
-// const pressure1 = createGaugeWithIcon('pressureGauge1', {
-//   minValue: 0, maxValue: 10, unit: 'бар', tickCount: 10,
-//   dangerThreshold: 8.5, warningThreshold: 7,
-//   colors: { primary:'#2196f3', danger:'#d32f2f', warning:'#fbc02d', success:'#388e3c', text:'#e0f7fa' },
-//   title: 'Давление 1',
-//   iconPath: icons.pressure
-// });
-
-// const pressure2 = createGaugeWithIcon('pressureGauge2', {
-//   minValue: 0, maxValue: 10, unit: 'бар', tickCount: 10,
-//   dangerThreshold: 8.5, warningThreshold: 7,
-//   colors: { primary:'#2196f3', danger:'#d32f2f', warning:'#fbc02d', success:'#388e3c', text:'#e0f7fa' },
-//   title: 'Давление 2',
-//   iconPath: icons.pressure
-// });
-
-// const delayGauge = createGaugeWithIcon('delayGauge', {
-//   minValue: 0, maxValue: 12, unit: 'V', tickCount: 12,
-//   dangerThreshold: 10, warningThreshold: 7,
-//   colors: { primary:'#ff4081', danger:'#ff5252', warning:'#ffb142', success:'#4caf50', text:'#e0f7fa' },
-//   title: 'Питание',
-//   iconPath: icons.temperature
-// });
-
-// const thrust2 = createGaugeWithIcon('thrustGauge2', {
-//   minValue: 0, maxValue: 200, unit: 'Hv', tickCount: 10,
-//   dangerThreshold: 90, warningThreshold: 75,
-//   colors: { primary:'#66bb6a', danger:'#d32f2f', warning:'#fbc02d', success:'#388e3c', text:'#e0f7fa' },
-//   title: 'Напряжение Hv',
-//   iconPath: icons.thrust
-// });
 
 let ws = null;
 let isConnected = false;
@@ -375,7 +375,7 @@ function connectWebSocket() {
       
       if (reconnectAttempts < maxReconnectAttempts) {
         reconnectAttempts++;
-        const delay = Math.min(1000 * reconnectAttempts, 10000); // Экспоненциальная задержка
+        const delay = Math.min(1000 * reconnectAttempts, 10000);
         console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
         setTimeout(connectWebSocket, delay);
       } else {
